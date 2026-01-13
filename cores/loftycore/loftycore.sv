@@ -477,6 +477,23 @@ module nerv #(
 	wire [31:0] imm_b_sext = $signed(imm_b);
 	wire [31:0] imm_j_sext = $signed(imm_j);
 
+	// shifter
+	wire is_shift_left = insn_funct7 == 7'b0 && (insn_funct3 == /* SLL */ 3'b001);
+	wire bit_reverse_rs1 = is_shift_left;
+	wire bit_reverse_rd  = is_shift_left;
+	wire [31:0] shift_input;
+	wire [31:0] shift_output = shift_input >> rs2_value[4:0];
+	wire [31:0] shift_result;
+	generate
+		genvar i;
+		for (i=0; i<32; i=i+1) begin
+			assign shift_input[i] = bit_reverse_rs1 ? rs1_value[31-i] : rs1_value[i];
+		end
+		for (i=0; i<32; i=i+1) begin
+			assign shift_result[i] = bit_reverse_rd ? shift_output[31-i] : shift_output[i];
+		end
+	endgenerate
+
 	// opcodes - see section 19 of RiscV spec
 	localparam OPCODE_LOAD       = 7'b 00_000_11;
 	localparam OPCODE_STORE      = 7'b 01_000_11;
@@ -985,11 +1002,11 @@ module nerv #(
 				case ({insn_funct7, insn_funct3})
 					10'b 0000000_000 /* ADD  */: begin next_wr = 1; next_rd = rs1_value + rs2_value; end
 					10'b 0100000_000 /* SUB  */: begin next_wr = 1; next_rd = rs1_value - rs2_value; end
-					10'b 0000000_001 /* SLL  */: begin next_wr = 1; next_rd = rs1_value << rs2_value[4:0]; end
+					10'b 0000000_001 /* SLL  */: begin next_wr = 1; next_rd = shift_result; end
 					10'b 0000000_010 /* SLT  */: begin next_wr = 1; next_rd = $signed(rs1_value) < $signed(rs2_value); end
 					10'b 0000000_011 /* SLTU */: begin next_wr = 1; next_rd = rs1_value < rs2_value; end
 					10'b 0000000_100 /* XOR  */: begin next_wr = 1; next_rd = rs1_value ^ rs2_value; end
-					10'b 0000000_101 /* SRL  */: begin next_wr = 1; next_rd = rs1_value >> rs2_value[4:0]; end
+					10'b 0000000_101 /* SRL  */: begin next_wr = 1; next_rd = shift_result; end
 					10'b 0100000_101 /* SRA  */: begin next_wr = 1; next_rd = $signed(rs1_value) >>> rs2_value[4:0]; end
 					10'b 0000000_110 /* OR   */: begin next_wr = 1; next_rd = rs1_value | rs2_value; end
 					10'b 0000000_111 /* AND  */: begin next_wr = 1; next_rd = rs1_value & rs2_value; end
