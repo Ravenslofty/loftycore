@@ -998,7 +998,7 @@ module nerv #(
 					10'b 0000100_101 /* UNZIP */: begin next_wr = insn[24:20] == 5'b 01111; illinsn = !next_wr; next_rd = 0; for (int i=0; i<16; i=i+1) begin next_rd[i] = rs1_value[2*i]; next_rd[i+16] = rs1_value[2*i+1]; end end
 					// Zbs: Single-bit instructions
 					10'b 0100100_001 /* BCLRI */: begin next_wr = 1; next_rd = rs1_value & ~(1 << insn[24:20]); end
-					10'b 0100100_101 /* BEXTI */: begin next_wr = 1; next_rd = (rs1_value >> insn[24:20]) & 1; end
+					10'b 0100100_101 /* BEXTI */: begin next_wr = 1; next_rd = shift_result[0]; end
 					10'b 0110100_001 /* BINVI */: begin next_wr = 1; next_rd = rs1_value ^ (1 << insn[24:20]); end
 					10'b 0010100_001 /* BSETI */: begin next_wr = 1; next_rd = rs1_value | (1 << insn[24:20]); end
 					default: illinsn = 1;
@@ -1040,7 +1040,7 @@ module nerv #(
 					10'b 0000101_010 /* CLMULR */: begin next_wr = 1; next_rd = 0; for (int i=0; i<32; i=i+1) next_rd = (rs2_value[i]) ? next_rd ^ (rs1_value >> (32 - i - 1)) : next_rd; end
 					// Zbs: Single-bit instructions
 					10'b 0100100_001 /* BCLR */: begin next_wr = 1; next_rd = rs1_value & ~(1 << rs2_value[4:0]); end
-					10'b 0100100_101 /* BEXT */: begin next_wr = 1; next_rd = (rs1_value >> rs2_value[4:0]) & 1; end
+					10'b 0100100_101 /* BEXT */: begin next_wr = 1; next_rd = shift_result[0]; end
 					10'b 0110100_001 /* BINV */: begin next_wr = 1; next_rd = rs1_value ^ (1 << rs2_value[4:0]); end
 					10'b 0010100_001 /* BSET */: begin next_wr = 1; next_rd = rs1_value | (1 << rs2_value[4:0]); end
 					// Zbkx: Crossbar permutations
