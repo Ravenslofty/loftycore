@@ -50,6 +50,6 @@ with open("disasm.s", "w") as f:
         else:
             print(".word 0x%08x # %d" % (tv_insn, tv_order), file=f)
 
-system("riscv64-unknown-elf-as -march=rv32i -o disasm.o disasm.s")
-system("riscv64-unknown-elf-objdump -d -M numeric,no-aliases disasm.o")
+system("riscv64-elf-as -march=rv32i -o disasm.o disasm.s")
+system("riscv64-elf-objdump -d -M numeric,no-aliases disasm.o")
 

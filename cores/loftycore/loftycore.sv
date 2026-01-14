@@ -478,12 +478,18 @@ module nerv #(
 	wire [31:0] imm_j_sext = $signed(imm_j);
 
 	// shifter
-	wire is_shift_left = insn_funct7 == 7'b0 && (insn_funct3 == /* SLL */ 3'b001);
+	wire is_shift_left      = insn_funct3 == /* SLL[I] */ 3'b001;
+	wire is_signed_shift    = insn_funct7 == 7'b0100000;
+	wire is_immediate_shift = insn_opcode == OPCODE_OP_IMM;
+
 	wire bit_reverse_rs1 = is_shift_left;
 	wire bit_reverse_rd  = is_shift_left;
+
+	wire [4:0]  shift_amount = is_immediate_shift ? insn_rs2 : rs2_value[4:0];
 	wire [31:0] shift_input;
-	wire [31:0] shift_output = shift_input >> rs2_value[4:0];
+	wire [31:0] shift_output = is_signed_shift ? ($signed(shift_input) >>> shift_amount) : (shift_input >> shift_amount);
 	wire [31:0] shift_result;
+
 	generate
 		genvar i;
 		for (i=0; i<32; i=i+1) begin
@@ -963,8 +969,8 @@ module nerv #(
 					10'b zzzzzzz_100 /* XORI  */: begin next_wr = 1; next_rd = rs1_value ^ imm_i_sext; end
 					10'b zzzzzzz_110 /* ORI   */: begin next_wr = 1; next_rd = rs1_value | imm_i_sext; end
 					10'b zzzzzzz_111 /* ANDI  */: begin next_wr = 1; next_rd = rs1_value & imm_i_sext; end
-					10'b 0000000_001 /* SLLI  */: begin next_wr = 1; next_rd = rs1_value << insn[24:20]; end
-					10'b 0000000_101 /* SRLI  */: begin next_wr = 1; next_rd = rs1_value >> insn[24:20]; end
+					10'b 0000000_001 /* SLLI  */: begin next_wr = 1; next_rd = shift_result; end
+					10'b 0000000_101 /* SRLI  */: begin next_wr = 1; next_rd = shift_result; end
 					10'b 0100000_101 /* SRAI  */: begin next_wr = 1; next_rd = $signed(rs1_value) >>> insn[24:20]; end
 					// Zbb: Basic bit-manipulation
 					10'b 0110000_001: begin
