@@ -487,7 +487,9 @@ module nerv #(
 
 	wire [4:0]  shift_amount = is_immediate_shift ? insn_rs2 : rs2_value[4:0];
 	wire [31:0] shift_input;
-	wire [31:0] shift_output = is_signed_shift ? ($signed(shift_input) >>> shift_amount) : (shift_input >> shift_amount);
+	wire [31:0] shift_signed   = $signed(shift_input) >>> shift_amount;
+	wire [31:0] shift_unsigned = shift_input >> shift_amount;
+	wire [31:0] shift_output   = is_signed_shift ? shift_signed : shift_unsigned;
 	wire [31:0] shift_result;
 
 	generate
@@ -971,7 +973,7 @@ module nerv #(
 					10'b zzzzzzz_111 /* ANDI  */: begin next_wr = 1; next_rd = rs1_value & imm_i_sext; end
 					10'b 0000000_001 /* SLLI  */: begin next_wr = 1; next_rd = shift_result; end
 					10'b 0000000_101 /* SRLI  */: begin next_wr = 1; next_rd = shift_result; end
-					10'b 0100000_101 /* SRAI  */: begin next_wr = 1; next_rd = $signed(rs1_value) >>> insn[24:20]; end
+					10'b 0100000_101 /* SRAI  */: begin next_wr = 1; next_rd = shift_result; end
 					// Zbb: Basic bit-manipulation
 					10'b 0110000_001: begin
 						casez (insn[24:20])
@@ -1013,7 +1015,7 @@ module nerv #(
 					10'b 0000000_011 /* SLTU */: begin next_wr = 1; next_rd = rs1_value < rs2_value; end
 					10'b 0000000_100 /* XOR  */: begin next_wr = 1; next_rd = rs1_value ^ rs2_value; end
 					10'b 0000000_101 /* SRL  */: begin next_wr = 1; next_rd = shift_result; end
-					10'b 0100000_101 /* SRA  */: begin next_wr = 1; next_rd = $signed(rs1_value) >>> rs2_value[4:0]; end
+					10'b 0100000_101 /* SRA  */: begin next_wr = 1; next_rd = shift_result; end
 					10'b 0000000_110 /* OR   */: begin next_wr = 1; next_rd = rs1_value | rs2_value; end
 					10'b 0000000_111 /* AND  */: begin next_wr = 1; next_rd = rs1_value & rs2_value; end
 					// Zba: Address generation
