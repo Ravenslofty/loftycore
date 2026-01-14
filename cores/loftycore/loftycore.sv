@@ -485,10 +485,10 @@ module nerv #(
 	wire bit_reverse_rs1 = is_shift_left;
 	wire bit_reverse_rd  = is_shift_left;
 
-	wire [4:0]  shift_amount = is_immediate_shift ? insn_rs2 : rs2_value[4:0];
+	wire [4:0]  shift_rs2 = is_immediate_shift ? insn_rs2 : rs2_value[4:0];
 	wire [31:0] shift_input;
-	wire [31:0] shift_signed   = $signed(shift_input) >>> shift_amount;
-	wire [31:0] shift_unsigned = shift_input >> shift_amount;
+	wire [31:0] shift_signed   = $signed(shift_input) >>> shift_rs2;
+	wire [31:0] shift_unsigned = shift_input >> shift_rs2;
 	wire [31:0] shift_output   = is_signed_shift ? shift_signed : shift_unsigned;
 	wire [31:0] shift_result;
 
@@ -501,6 +501,22 @@ module nerv #(
 			assign shift_result[i] = bit_reverse_rd ? shift_output[31-i] : shift_output[i];
 		end
 	endgenerate
+
+	// comparator
+	wire is_signed_complt    = |{
+		insn_opcode == OPCODE_BRANCH && (insn_funct3 == /* BLT */ 3'b100 || insn_funct3 == /* BGE */ 3'b101),
+		insn_opcode == OPCODE_OP && (insn_funct3 == /* SLT */ 3'b010),
+		insn_opcode == OPCODE_OP && insn_funct7 == 7'b0000101 && (insn_funct3 == /* MIN */ 3'b100 || insn_funct3 == /* MAX */ 3'b110),
+		insn_opcode == OPCODE_OP_IMM && (insn_funct3 == /* SLTI */ 3'b010)
+	};
+	wire is_immediate_complt = |{
+		insn_opcode == OPCODE_OP_IMM && (insn_funct3 == /* SLTI */ 3'b010 || insn_funct3 == /* SLTIU */ 3'b011)
+	};
+
+	wire [31:0] complt_rs2   = is_immediate_complt ? imm_i_sext : rs2_value;
+	wire complt_signed       = $signed(rs1_value) < $signed(complt_rs2);
+	wire complt_unsigned     = rs1_value < complt_rs2;
+	wire complt_result       = is_signed_complt ? complt_signed : complt_unsigned;
 
 	// opcodes - see section 19 of RiscV spec
 	localparam OPCODE_LOAD       = 7'b 00_000_11;
@@ -911,10 +927,10 @@ module nerv #(
 				case (insn_funct3)
 					3'b 000 /* BEQ  */: begin if (rs1_value == rs2_value) npc = pc + imm_b_sext; end
 					3'b 001 /* BNE  */: begin if (rs1_value != rs2_value) npc = pc + imm_b_sext; end
-					3'b 100 /* BLT  */: begin if ($signed(rs1_value) < $signed(rs2_value)) npc = pc + imm_b_sext; end
-					3'b 101 /* BGE  */: begin if ($signed(rs1_value) >= $signed(rs2_value)) npc = pc + imm_b_sext; end
-					3'b 110 /* BLTU */: begin if (rs1_value < rs2_value) npc = pc + imm_b_sext; end
-					3'b 111 /* BGEU */: begin if (rs1_value >= rs2_value) npc = pc + imm_b_sext; end
+					3'b 100 /* BLT  */: begin if (complt_result) npc = pc + imm_b_sext; end
+					3'b 101 /* BGE  */: begin if (!complt_result) npc = pc + imm_b_sext; end
+					3'b 110 /* BLTU */: begin if (complt_result) npc = pc + imm_b_sext; end
+					3'b 111 /* BGEU */: begin if (!complt_result) npc = pc + imm_b_sext; end
 					default: illinsn = 1;
 				endcase
 				if (npc & 32'b 11) begin
@@ -966,8 +982,8 @@ module nerv #(
 			OPCODE_OP_IMM: begin
 				casez ({insn_funct7, insn_funct3})
 					10'b zzzzzzz_000 /* ADDI  */: begin next_wr = 1; next_rd = rs1_value + imm_i_sext; end
-					10'b zzzzzzz_010 /* SLTI  */: begin next_wr = 1; next_rd = $signed(rs1_value) < $signed(imm_i_sext); end
-					10'b zzzzzzz_011 /* SLTIU */: begin next_wr = 1; next_rd = rs1_value < imm_i_sext; end
+					10'b zzzzzzz_010 /* SLTI  */: begin next_wr = 1; next_rd = complt_result; end
+					10'b zzzzzzz_011 /* SLTIU */: begin next_wr = 1; next_rd = complt_result; end
 					10'b zzzzzzz_100 /* XORI  */: begin next_wr = 1; next_rd = rs1_value ^ imm_i_sext; end
 					10'b zzzzzzz_110 /* ORI   */: begin next_wr = 1; next_rd = rs1_value | imm_i_sext; end
 					10'b zzzzzzz_111 /* ANDI  */: begin next_wr = 1; next_rd = rs1_value & imm_i_sext; end
@@ -1011,8 +1027,8 @@ module nerv #(
 					10'b 0000000_000 /* ADD  */: begin next_wr = 1; next_rd = rs1_value + rs2_value; end
 					10'b 0100000_000 /* SUB  */: begin next_wr = 1; next_rd = rs1_value - rs2_value; end
 					10'b 0000000_001 /* SLL  */: begin next_wr = 1; next_rd = shift_result; end
-					10'b 0000000_010 /* SLT  */: begin next_wr = 1; next_rd = $signed(rs1_value) < $signed(rs2_value); end
-					10'b 0000000_011 /* SLTU */: begin next_wr = 1; next_rd = rs1_value < rs2_value; end
+					10'b 0000000_010 /* SLT  */: begin next_wr = 1; next_rd = complt_result; end
+					10'b 0000000_011 /* SLTU */: begin next_wr = 1; next_rd = complt_result; end
 					10'b 0000000_100 /* XOR  */: begin next_wr = 1; next_rd = rs1_value ^ rs2_value; end
 					10'b 0000000_101 /* SRL  */: begin next_wr = 1; next_rd = shift_result; end
 					10'b 0100000_101 /* SRA  */: begin next_wr = 1; next_rd = shift_result; end
@@ -1026,10 +1042,10 @@ module nerv #(
 					10'b 0100000_111 /* ANDN   */: begin next_wr = 1; next_rd = rs1_value & ~rs2_value; end
 					10'b 0100000_110 /* ORN    */: begin next_wr = 1; next_rd = rs1_value | ~rs2_value; end
 					10'b 0100000_100 /* XNOR   */: begin next_wr = 1; next_rd = ~(rs1_value ^ rs2_value); end
-					10'b 0000101_110 /* MAX    */: begin next_wr = 1; next_rd = ($signed(rs1_value) < $signed(rs2_value)) ? rs2_value : rs1_value; end
-					10'b 0000101_111 /* MAXU   */: begin next_wr = 1; next_rd = (rs1_value < rs2_value) ? rs2_value : rs1_value; end
-					10'b 0000101_100 /* MIN    */: begin next_wr = 1; next_rd = ($signed(rs1_value) < $signed(rs2_value)) ? rs1_value : rs2_value; end
-					10'b 0000101_101 /* MINU   */: begin next_wr = 1; next_rd = (rs1_value < rs2_value) ? rs1_value : rs2_value; end
+					10'b 0000101_110 /* MAX    */: begin next_wr = 1; next_rd = complt_result ? rs2_value : rs1_value; end
+					10'b 0000101_111 /* MAXU   */: begin next_wr = 1; next_rd = complt_result ? rs2_value : rs1_value; end
+					10'b 0000101_100 /* MIN    */: begin next_wr = 1; next_rd = complt_result ? rs1_value : rs2_value; end
+					10'b 0000101_101 /* MINU   */: begin next_wr = 1; next_rd = complt_result ? rs1_value : rs2_value; end
 					10'b 0110000_001 /* ROL    */: begin next_wr = 1; next_rd = rs1_value << rs2_value[4:0] | (rs1_value >> (32 - rs2_value[4:0])); end
 					10'b 0110000_101 /* ROR    */: begin next_wr = 1; next_rd = rs1_value >> rs2_value[4:0] | (rs1_value << (32 - rs2_value[4:0])); end
 					10'b 0000100_100 /* PACK   */: begin next_wr = 1; next_rd = {rs2_value[15:0], rs1_value[15:0]}; end
