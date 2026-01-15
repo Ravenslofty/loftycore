@@ -477,57 +477,6 @@ module nerv #(
 	wire [31:0] imm_b_sext = $signed(imm_b);
 	wire [31:0] imm_j_sext = $signed(imm_j);
 
-	// decoder next-pc/alt-pc
-	wire [31:0] decode_sequential_pc = pc + 4;
-	wire [31:0] decode_branch_pc = pc + imm_b_sext;
-
-	wire [31:0] decode_next_pc = decode_sequential_pc;
-	wire [31:0] decode_alt_pc = insn_opcode == OPCODE_BRANCH ? decode_branch_pc : decode_sequential_pc;
-
-	// shifter
-	wire is_shift_left      = insn_funct3 == /* SLL[I] */ 3'b001;
-	wire is_signed_shift    = insn_funct7 == 7'b0100000;
-	wire is_immediate_shift = insn_opcode == OPCODE_OP_IMM;
-
-	wire bit_reverse_rs1 = is_shift_left;
-	wire bit_reverse_rd  = is_shift_left;
-
-	wire [4:0]  shift_rs2 = is_immediate_shift ? insn_rs2 : rs2_value[4:0];
-	wire [31:0] shift_input;
-	wire [31:0] shift_signed   = $signed(shift_input) >>> shift_rs2;
-	wire [31:0] shift_unsigned = shift_input >> shift_rs2;
-	wire [31:0] shift_output   = is_signed_shift ? shift_signed : shift_unsigned;
-	wire [31:0] shift_result;
-
-	generate
-		genvar i;
-		for (i=0; i<32; i=i+1) begin
-			assign shift_input[i] = bit_reverse_rs1 ? rs1_value[31-i] : rs1_value[i];
-		end
-		for (i=0; i<32; i=i+1) begin
-			assign shift_result[i] = bit_reverse_rd ? shift_output[31-i] : shift_output[i];
-		end
-	endgenerate
-
-	// comparator - less than
-	wire is_signed_complt    = |{
-		insn_opcode == OPCODE_BRANCH && (insn_funct3 == /* BLT */ 3'b100 || insn_funct3 == /* BGE */ 3'b101),
-		insn_opcode == OPCODE_OP && (insn_funct3 == /* SLT */ 3'b010),
-		insn_opcode == OPCODE_OP && insn_funct7 == 7'b0000101 && (insn_funct3 == /* MIN */ 3'b100 || insn_funct3 == /* MAX */ 3'b110),
-		insn_opcode == OPCODE_OP_IMM && (insn_funct3 == /* SLTI */ 3'b010)
-	};
-	wire is_immediate_complt = |{
-		insn_opcode == OPCODE_OP_IMM && (insn_funct3 == /* SLTI */ 3'b010 || insn_funct3 == /* SLTIU */ 3'b011)
-	};
-
-	wire [31:0] complt_rs2   = is_immediate_complt ? imm_i_sext : rs2_value;
-	wire complt_signed       = $signed(rs1_value) < $signed(complt_rs2);
-	wire complt_unsigned     = rs1_value < complt_rs2;
-	wire complt_result       = is_signed_complt ? complt_signed : complt_unsigned;
-
-	// comparator - equality
-	wire compeq_result       = rs1_value == rs2_value;
-
 	// opcodes - see section 19 of RiscV spec
 	localparam OPCODE_LOAD       = 7'b 00_000_11;
 	localparam OPCODE_STORE      = 7'b 01_000_11;
@@ -579,6 +528,74 @@ module nerv #(
 	localparam MCAUSE_ECALL_M_MODE             = 32'h0000000b;
 
 	localparam IRQ_MASK = 32'hFFFF0888;
+
+
+	// decode: next-pc/alt-pc
+	wire [31:0] decode_sequential_pc = pc + 4;
+	wire [31:0] decode_branch_pc     = pc + imm_b_sext;
+	wire [31:0] decode_jump_pc       = pc + imm_j_sext;
+
+	wire [31:0] decode_next_pc = insn_opcode == OPCODE_JAL    ? decode_jump_pc   : decode_sequential_pc;
+	wire [31:0] decode_alt_pc  = insn_opcode == OPCODE_BRANCH ? decode_branch_pc : decode_sequential_pc;
+
+	// decode: condition
+	wire decode_complt_valid = |{
+		insn_opcode == OPCODE_BRANCH && (insn_funct3 == /* BLT */ 3'b100 || insn_funct3 == /* BGE */ 3'b101 || insn_funct3 == /* BLTU */ 3'b110 || insn_funct3 == /* BGEU */ 3'b111)
+	};
+	wire decode_complt_value = |{
+		insn_opcode == OPCODE_BRANCH && (insn_funct3 == /* BLT */ 3'b100 || insn_funct3 == /* BLTU */ 3'b110)
+	};
+	wire decode_compeq_valid = |{
+		insn_opcode == OPCODE_BRANCH && (insn_funct3 == /* BEQ */ 3'b000 || insn_funct3 == /* BNE */ 3'b001)
+	};
+	wire decode_compeq_value = |{
+		insn_opcode == OPCODE_BRANCH && insn_funct3 == /* BEQ */ 3'b000
+	};
+
+	// execute: shifter
+	wire is_shift_left      = insn_funct3 == /* SLL[I] */ 3'b001;
+	wire is_signed_shift    = insn_funct7 == 7'b0100000;
+	wire is_immediate_shift = insn_opcode == OPCODE_OP_IMM;
+
+	wire bit_reverse_rs1 = is_shift_left;
+	wire bit_reverse_rd  = is_shift_left;
+
+	wire [4:0]  shift_rs2      = is_immediate_shift ? insn_rs2 : rs2_value[4:0];
+	wire [31:0] shift_input;
+	wire [31:0] shift_signed   = $signed(shift_input) >>> shift_rs2;
+	wire [31:0] shift_unsigned = shift_input >> shift_rs2;
+	wire [31:0] shift_output   = is_signed_shift ? shift_signed : shift_unsigned;
+	wire [31:0] shift_result;
+
+	generate
+		genvar i;
+		for (i=0; i<32; i=i+1) begin
+			assign shift_input[i] = bit_reverse_rs1 ? rs1_value[31-i] : rs1_value[i];
+		end
+		for (i=0; i<32; i=i+1) begin
+			assign shift_result[i] = bit_reverse_rd ? shift_output[31-i] : shift_output[i];
+		end
+	endgenerate
+
+	// comparator - less than
+	wire is_signed_complt = |{
+		insn_opcode == OPCODE_BRANCH && (insn_funct3 == /* BLT */ 3'b100 || insn_funct3 == /* BGE */ 3'b101),
+		insn_opcode == OPCODE_OP && (insn_funct3 == /* SLT */ 3'b010),
+		insn_opcode == OPCODE_OP && insn_funct7 == 7'b0000101 && (insn_funct3 == /* MIN */ 3'b100 || insn_funct3 == /* MAX */ 3'b110),
+		insn_opcode == OPCODE_OP_IMM && (insn_funct3 == /* SLTI */ 3'b010)
+	};
+	wire is_immediate_complt = |{
+		insn_opcode == OPCODE_OP_IMM && (insn_funct3 == /* SLTI */ 3'b010 || insn_funct3 == /* SLTIU */ 3'b011)
+	};
+
+	wire [31:0] complt_rs2 = is_immediate_complt ? imm_i_sext : rs2_value;
+	wire complt_signed     = $signed(rs1_value) < $signed(complt_rs2);
+	wire complt_unsigned   = rs1_value < complt_rs2;
+	wire complt_result     = is_signed_complt ? complt_signed : complt_unsigned;
+
+	// comparator - equality
+	wire compeq_result     = rs1_value == rs2_value;
+
 
 	// next write, next destination (rd) value & register
 	reg next_wr;
@@ -914,7 +931,7 @@ module nerv #(
 			OPCODE_JAL: begin
 				next_wr = 1;
 				next_rd = npc;
-				npc = pc + imm_j_sext;
+				npc = decode_next_pc;
 				if (npc & 32'b 11) begin
 					illinsn = 1;
 					npc = npc & ~32'b 11;
@@ -938,16 +955,16 @@ module nerv #(
 			// branch instructions: Branch If Equal, Branch Not Equal, Branch Less Than, Branch Greater Than, Branch Less Than Unsigned, Branch Greater Than Unsigned
 			OPCODE_BRANCH: begin
 				case (insn_funct3)
-					3'b 000 /* BEQ  */: begin condition = compeq_result; condition_result = 1'b1; end
-					3'b 001 /* BNE  */: begin condition = compeq_result; condition_result = 1'b0; end
-					3'b 100 /* BLT  */: begin condition = complt_result; condition_result = 1'b1; end
-					3'b 101 /* BGE  */: begin condition = complt_result; condition_result = 1'b0; end
-					3'b 110 /* BLTU */: begin condition = complt_result; condition_result = 1'b1; end
-					3'b 111 /* BGEU */: begin condition = complt_result; condition_result = 1'b0; end
+					3'b 000 /* BEQ  */,
+					3'b 001 /* BNE  */,
+					3'b 100 /* BLT  */,
+					3'b 101 /* BGE  */,
+					3'b 110 /* BLTU */,
+					3'b 111 /* BGEU */: ;
 					default: illinsn = 1;
 				endcase
 
-				if (condition == condition_result)
+				if ((decode_compeq_valid && compeq_result == decode_compeq_value) || (decode_complt_valid && complt_result == decode_complt_value))
 					npc = decode_alt_pc;
 				else
 					npc = decode_next_pc;
