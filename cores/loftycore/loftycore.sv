@@ -927,16 +927,6 @@ module nerv #(
 				next_wr = 1;
 				next_rd = (insn[31:12] << 12) + pc;
 			end
-			// Jump And Link (unconditional jump)
-			OPCODE_JAL: begin
-				next_wr = 1;
-				next_rd = npc;
-				npc = decode_next_pc;
-				if (npc & 32'b 11) begin
-					illinsn = 1;
-					npc = npc & ~32'b 11;
-				end
-			end
 			// Jump And Link Register (indirect jump)
 			OPCODE_JALR: begin
 				case (insn_funct3)
@@ -953,16 +943,22 @@ module nerv #(
 				end
 			end
 			// branch instructions: Branch If Equal, Branch Not Equal, Branch Less Than, Branch Greater Than, Branch Less Than Unsigned, Branch Greater Than Unsigned
-			OPCODE_BRANCH: begin
-				case (insn_funct3)
-					3'b 000 /* BEQ  */,
-					3'b 001 /* BNE  */,
-					3'b 100 /* BLT  */,
-					3'b 101 /* BGE  */,
-					3'b 110 /* BLTU */,
-					3'b 111 /* BGEU */: ;
-					default: illinsn = 1;
-				endcase
+			// Jump And Link (unconditional jump)
+			OPCODE_BRANCH, OPCODE_JAL: begin
+				if (insn_opcode == OPCODE_BRANCH) begin
+					case (insn_funct3)
+						3'b 000 /* BEQ  */,
+						3'b 001 /* BNE  */,
+						3'b 100 /* BLT  */,
+						3'b 101 /* BGE  */,
+						3'b 110 /* BLTU */,
+						3'b 111 /* BGEU */: ;
+						default: illinsn = 1;
+					endcase
+				end else begin
+					next_wr = 1;
+					next_rd = npc;
+				end
 
 				if ((decode_compeq_valid && compeq_result == decode_compeq_value) || (decode_complt_valid && complt_result == decode_complt_value))
 					npc = decode_alt_pc;
