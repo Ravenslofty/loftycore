@@ -477,6 +477,13 @@ module nerv #(
 	wire [31:0] imm_b_sext = $signed(imm_b);
 	wire [31:0] imm_j_sext = $signed(imm_j);
 
+	// decoder next-pc/alt-pc
+	wire [31:0] decode_sequential_pc = pc + 4;
+	wire [31:0] decode_branch_pc = pc + imm_b_sext;
+
+	wire [31:0] decode_next_pc = decode_sequential_pc;
+	wire [31:0] decode_alt_pc = insn_opcode == OPCODE_BRANCH ? decode_branch_pc : decode_sequential_pc;
+
 	// shifter
 	wire is_shift_left      = insn_funct3 == /* SLL[I] */ 3'b001;
 	wire is_signed_shift    = insn_funct7 == 7'b0100000;
@@ -502,7 +509,7 @@ module nerv #(
 		end
 	endgenerate
 
-	// comparator
+	// comparator - less than
 	wire is_signed_complt    = |{
 		insn_opcode == OPCODE_BRANCH && (insn_funct3 == /* BLT */ 3'b100 || insn_funct3 == /* BGE */ 3'b101),
 		insn_opcode == OPCODE_OP && (insn_funct3 == /* SLT */ 3'b010),
@@ -517,6 +524,9 @@ module nerv #(
 	wire complt_signed       = $signed(rs1_value) < $signed(complt_rs2);
 	wire complt_unsigned     = rs1_value < complt_rs2;
 	wire complt_result       = is_signed_complt ? complt_signed : complt_unsigned;
+
+	// comparator - equality
+	wire compeq_result       = rs1_value == rs2_value;
 
 	// opcodes - see section 19 of RiscV spec
 	localparam OPCODE_LOAD       = 7'b 00_000_11;
@@ -689,6 +699,9 @@ module nerv #(
 		else if (irq_en[3]) irq_num = 5'd3;
 		else irq_num = 5'd0;
 	end
+
+	reg condition;
+	reg condition_result;
 
 	always @* begin
 		// advance pc
@@ -925,14 +938,20 @@ module nerv #(
 			// branch instructions: Branch If Equal, Branch Not Equal, Branch Less Than, Branch Greater Than, Branch Less Than Unsigned, Branch Greater Than Unsigned
 			OPCODE_BRANCH: begin
 				case (insn_funct3)
-					3'b 000 /* BEQ  */: begin if (rs1_value == rs2_value) npc = pc + imm_b_sext; end
-					3'b 001 /* BNE  */: begin if (rs1_value != rs2_value) npc = pc + imm_b_sext; end
-					3'b 100 /* BLT  */: begin if (complt_result) npc = pc + imm_b_sext; end
-					3'b 101 /* BGE  */: begin if (!complt_result) npc = pc + imm_b_sext; end
-					3'b 110 /* BLTU */: begin if (complt_result) npc = pc + imm_b_sext; end
-					3'b 111 /* BGEU */: begin if (!complt_result) npc = pc + imm_b_sext; end
+					3'b 000 /* BEQ  */: begin condition = compeq_result; condition_result = 1'b1; end
+					3'b 001 /* BNE  */: begin condition = compeq_result; condition_result = 1'b0; end
+					3'b 100 /* BLT  */: begin condition = complt_result; condition_result = 1'b1; end
+					3'b 101 /* BGE  */: begin condition = complt_result; condition_result = 1'b0; end
+					3'b 110 /* BLTU */: begin condition = complt_result; condition_result = 1'b1; end
+					3'b 111 /* BGEU */: begin condition = complt_result; condition_result = 1'b0; end
 					default: illinsn = 1;
 				endcase
+
+				if (condition == condition_result)
+					npc = decode_alt_pc;
+				else
+					npc = decode_next_pc;
+
 				if (npc & 32'b 11) begin
 					illinsn = 1;
 					npc = npc & ~32'b 11;
