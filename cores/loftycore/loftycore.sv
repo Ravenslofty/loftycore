@@ -426,7 +426,7 @@ module nerv #(
 
 	// registers, instruction reg, program counter, next pc
 	reg [31:0] regfile [0:NUMREGS-1];
-	wire [31:0] insn;
+	RiscV::Insn32 insn;
 	reg [31:0] npc;
 	reg [31:0] pc;
 
@@ -440,20 +440,9 @@ module nerv #(
 	assign imem_addr = npc;
 	assign insn = imem_data;
 
-	// components of the instruction
-	wire [6:0] insn_funct7;
-	wire [4:0] insn_rs2;
-	wire [4:0] insn_rs1;
-	wire [2:0] insn_funct3;
-	wire [4:0] insn_rd;
-	wire [6:0] insn_opcode;
-
 	// rs1 and rs2 are source for the instruction
-	wire [31:0] rs1_value = !insn_rs1 ? 0 : regfile[insn_rs1];
-	wire [31:0] rs2_value = !insn_rs2 ? 0 : regfile[insn_rs2];
-
-	// split R-type instruction - see section 2.2 of RiscV spec
-	assign {insn_funct7, insn_rs2, insn_rs1, insn_funct3, insn_rd, insn_opcode} = insn;
+	wire [31:0] rs1_value = !insn.rs1 ? 0 : regfile[insn.rs1];
+	wire [31:0] rs2_value = !insn.rs2 ? 0 : regfile[insn.rs2];
 
 	// setup for I, S, B & J type instructions
 	// I - short immediates and loads
@@ -462,11 +451,11 @@ module nerv #(
 
 	// S - stores
 	wire [11:0] imm_s;
-	assign imm_s[11:5] = insn_funct7, imm_s[4:0] = insn_rd;
+	assign imm_s[11:5] = insn.funct7, imm_s[4:0] = insn.rd;
 
 	// B - conditionals
 	wire [12:0] imm_b;
-	assign {imm_b[12], imm_b[10:5]} = insn_funct7, {imm_b[4:1], imm_b[11]} = insn_rd, imm_b[0] = 1'b0;
+	assign {imm_b[12], imm_b[10:5]} = insn.funct7, {imm_b[4:1], imm_b[11]} = insn.rd, imm_b[0] = 1'b0;
 
 	// J - unconditional jumps
 	wire [20:0] imm_j;
@@ -477,41 +466,6 @@ module nerv #(
 	wire [31:0] imm_b_sext = $signed(imm_b);
 	wire [31:0] imm_j_sext = $signed(imm_j);
 
-	// opcodes - see section 19 of RiscV spec
-	localparam OPCODE_LOAD       = 7'b 00_000_11;
-	localparam OPCODE_STORE      = 7'b 01_000_11;
-	localparam OPCODE_MADD       = 7'b 10_000_11;
-	localparam OPCODE_BRANCH     = 7'b 11_000_11;
-
-	localparam OPCODE_LOAD_FP    = 7'b 00_001_11;
-	localparam OPCODE_STORE_FP   = 7'b 01_001_11;
-	localparam OPCODE_MSUB       = 7'b 10_001_11;
-	localparam OPCODE_JALR       = 7'b 11_001_11;
-
-	localparam OPCODE_CUSTOM_0   = 7'b 00_010_11;
-	localparam OPCODE_CUSTOM_1   = 7'b 01_010_11;
-	localparam OPCODE_NMSUB      = 7'b 10_010_11;
-	localparam OPCODE_RESERVED_0 = 7'b 11_010_11;
-
-	localparam OPCODE_MISC_MEM   = 7'b 00_011_11;
-	localparam OPCODE_AMO        = 7'b 01_011_11;
-	localparam OPCODE_NMADD      = 7'b 10_011_11;
-	localparam OPCODE_JAL        = 7'b 11_011_11;
-
-	localparam OPCODE_OP_IMM     = 7'b 00_100_11;
-	localparam OPCODE_OP         = 7'b 01_100_11;
-	localparam OPCODE_OP_FP      = 7'b 10_100_11;
-	localparam OPCODE_SYSTEM     = 7'b 11_100_11;
-
-	localparam OPCODE_AUIPC      = 7'b 00_101_11;
-	localparam OPCODE_LUI        = 7'b 01_101_11;
-	localparam OPCODE_RESERVED_1 = 7'b 10_101_11;
-	localparam OPCODE_RESERVED_2 = 7'b 11_101_11;
-
-	localparam OPCODE_OP_IMM_32  = 7'b 00_110_11;
-	localparam OPCODE_OP_32      = 7'b 01_110_11;
-	localparam OPCODE_CUSTOM_2   = 7'b 10_110_11;
-	localparam OPCODE_CUSTOM_3   = 7'b 11_110_11;
 
 	localparam MCAUSE_MACHINE_SOFTWARE_INTERRUPT = 32'h80000003;
 	localparam MCAUSE_MACHINE_TIMER_INTERRUPT    = 32'h80000007;
@@ -535,65 +489,89 @@ module nerv #(
 	wire [31:0] decode_branch_pc     = pc + imm_b_sext;
 	wire [31:0] decode_jump_pc       = pc + imm_j_sext;
 
-	wire [31:0] decode_next_pc = insn_opcode == OPCODE_JAL    ? decode_jump_pc   : decode_sequential_pc;
-	wire [31:0] decode_alt_pc  = insn_opcode == OPCODE_BRANCH ? decode_branch_pc : decode_sequential_pc;
+	wire [31:0] decode_next_pc = RiscV::opcode_is_jal(insn)    ? decode_jump_pc   : decode_sequential_pc;
+	wire [31:0] decode_alt_pc  = RiscV::opcode_is_branch(insn) ? decode_branch_pc : decode_sequential_pc;
 
 	// decode: condition
 	wire decode_complt_valid = |{
-		insn_opcode == OPCODE_BRANCH && (insn_funct3 == /* BLT */ 3'b100 || insn_funct3 == /* BGE */ 3'b101 || insn_funct3 == /* BLTU */ 3'b110 || insn_funct3 == /* BGEU */ 3'b111)
+		RiscV::is_blt(insn),
+		RiscV::is_bge(insn),
+		RiscV::is_bltu(insn),
+		RiscV::is_bgeu(insn)
 	};
 	wire decode_complt_value = |{
-		insn_opcode == OPCODE_BRANCH && (insn_funct3 == /* BLT */ 3'b100 || insn_funct3 == /* BLTU */ 3'b110)
+		RiscV::is_blt(insn),
+		RiscV::is_bltu(insn)
 	};
 	wire decode_compeq_valid = |{
-		insn_opcode == OPCODE_BRANCH && (insn_funct3 == /* BEQ */ 3'b000 || insn_funct3 == /* BNE */ 3'b001)
+		RiscV::is_beq(insn),
+		RiscV::is_bne(insn)
 	};
 	wire decode_compeq_value = |{
-		insn_opcode == OPCODE_BRANCH && insn_funct3 == /* BEQ */ 3'b000
+		RiscV::is_beq(insn)
 	};
 
+	// decode: miscellaneous
+	wire decode_rs1_is_imm = 0;
+	wire decode_rs2_is_imm = |{
+		// immediate shifts
+		RiscV::is_slli(insn),
+		RiscV::is_srli(insn),
+		RiscV::is_srai(insn),
+		RiscV::is_bexti(insn),
+		// immediate comparisons
+		RiscV::is_slti(insn),
+		RiscV::is_sltiu(insn)
+	};
+
+	wire is_shift_left = |{
+		RiscV::is_sll(insn),
+		RiscV::is_slli(insn)
+	};
+	wire decode_op_is_signed = |{
+		// signed shifts
+		RiscV::is_sra(insn),
+		RiscV::is_srai(insn),
+		// signed comparisons
+		RiscV::is_blt(insn),
+		RiscV::is_bge(insn),
+		RiscV::is_slt(insn),
+		RiscV::is_min(insn),
+		RiscV::is_max(insn),
+		RiscV::is_slti(insn)
+	};
+
+	wire decode_bit_reverse_rs1 = is_shift_left;
+	wire decode_bit_reverse_rd  = is_shift_left;
+
 	// execute: shifter
-	wire is_shift_left      = insn_funct3 == /* SLL[I] */ 3'b001;
-	wire is_signed_shift    = insn_funct7 == 7'b0100000;
-	wire is_immediate_shift = insn_opcode == OPCODE_OP_IMM;
-
-	wire bit_reverse_rs1 = is_shift_left;
-	wire bit_reverse_rd  = is_shift_left;
-
-	wire [4:0]  shift_rs2      = is_immediate_shift ? insn_rs2 : rs2_value[4:0];
+	wire [4:0]  shift_rs2      = decode_rs2_is_imm ? insn.rs2 : rs2_value[4:0];
 	wire [31:0] shift_input;
 	wire [31:0] shift_signed   = $signed(shift_input) >>> shift_rs2;
 	wire [31:0] shift_unsigned = shift_input >> shift_rs2;
-	wire [31:0] shift_output   = is_signed_shift ? shift_signed : shift_unsigned;
+	wire [31:0] shift_output   = decode_op_is_signed ? shift_signed : shift_unsigned;
 	wire [31:0] shift_result;
 
 	generate
 		genvar i;
 		for (i=0; i<32; i=i+1) begin
-			assign shift_input[i] = bit_reverse_rs1 ? rs1_value[31-i] : rs1_value[i];
+			assign shift_input[i] = decode_bit_reverse_rs1 ? rs1_value[31-i] : rs1_value[i];
 		end
 		for (i=0; i<32; i=i+1) begin
-			assign shift_result[i] = bit_reverse_rd ? shift_output[31-i] : shift_output[i];
+			assign shift_result[i] = decode_bit_reverse_rd ? shift_output[31-i] : shift_output[i];
 		end
 	endgenerate
 
-	// comparator - less than
-	wire is_signed_complt = |{
-		insn_opcode == OPCODE_BRANCH && (insn_funct3 == /* BLT */ 3'b100 || insn_funct3 == /* BGE */ 3'b101),
-		insn_opcode == OPCODE_OP && (insn_funct3 == /* SLT */ 3'b010),
-		insn_opcode == OPCODE_OP && insn_funct7 == 7'b0000101 && (insn_funct3 == /* MIN */ 3'b100 || insn_funct3 == /* MAX */ 3'b110),
-		insn_opcode == OPCODE_OP_IMM && (insn_funct3 == /* SLTI */ 3'b010)
-	};
-	wire is_immediate_complt = |{
-		insn_opcode == OPCODE_OP_IMM && (insn_funct3 == /* SLTI */ 3'b010 || insn_funct3 == /* SLTIU */ 3'b011)
-	};
+	// execute: arithmetic/logic unit
+	wire [31:0] add_result = 0;
 
-	wire [31:0] complt_rs2 = is_immediate_complt ? imm_i_sext : rs2_value;
+	// execute: less than comparator
+	wire [31:0] complt_rs2 = decode_rs2_is_imm ? imm_i_sext : rs2_value;
 	wire complt_signed     = $signed(rs1_value) < $signed(complt_rs2);
 	wire complt_unsigned   = rs1_value < complt_rs2;
-	wire complt_result     = is_signed_complt ? complt_signed : complt_unsigned;
+	wire complt_result     = decode_op_is_signed ? complt_signed : complt_unsigned;
 
-	// comparator - equality
+	// execute: equality comparator
 	wire compeq_result     = rs1_value == rs2_value;
 
 
@@ -630,10 +608,10 @@ module nerv #(
 	reg [31:0] csr_next;
 
 	wire imem_valid = !mem_rd_enable_q && !mem_wr_enable_q && !imem_fault;
-	wire [ 1:0] csr_mode = (running && imem_valid && !irq_num && insn_opcode == OPCODE_SYSTEM) ? insn_funct3[1:0] : 2'b 00; // 00=None, 01=RW, 10=RS, 11=RC
+	wire [ 1:0] csr_mode = (running && imem_valid && !irq_num && insn.opcode == RiscVOpcode32::SYSTEM) ? insn.funct3[1:0] : 2'b 00; // 00=None, 01=RW, 10=RS, 11=RC
 	wire [11:0] csr_addr = imm_i;
-	wire [31:0] csr_rsval = insn_funct3[2] ? insn_rs1 : rs1_value;
-	wire csr_ro = csr_mode && (csr_mode != 2'b01 && !insn_rs1);
+	wire [31:0] csr_rsval = insn.funct3[2] ? insn.rs1 : rs1_value;
+	wire csr_ro = csr_mode && (csr_mode != 2'b01 && !insn.rs1);
 
 	integer hpm_idx, hpm_increment, hpm_event;
 
@@ -734,7 +712,7 @@ module nerv #(
 `ifdef NERV_FAULT
 		cycle_dmem_fault = 0;
 `endif
-		wr_rd = insn_rd;
+		wr_rd = insn.rd;
 
 		illinsn = 0;
 
@@ -916,20 +894,20 @@ module nerv #(
 `endif // NERV_CSR
 
 		// act on opcodes
-		case (insn_opcode)
+		case (insn.opcode)
 			// Load Upper Immediate
-			OPCODE_LUI: begin
+			RiscVOpcode32::LUI: begin
 				next_wr = 1;
-				next_rd = insn[31:12] << 12;
+				next_rd = RiscV::immediate_u(insn);
 			end
 			// Add Upper Immediate to Program Counter
-			OPCODE_AUIPC: begin
+			RiscVOpcode32::AUIPC: begin
 				next_wr = 1;
-				next_rd = (insn[31:12] << 12) + pc;
+				next_rd = RiscV::immediate_u(insn) + pc;
 			end
 			// Jump And Link Register (indirect jump)
-			OPCODE_JALR: begin
-				case (insn_funct3)
+			RiscVOpcode32::JALR: begin
+				case (insn.funct3)
 					3'b 000 /* JALR */: begin
 						next_wr = 1;
 						next_rd = npc;
@@ -944,9 +922,9 @@ module nerv #(
 			end
 			// branch instructions: Branch If Equal, Branch Not Equal, Branch Less Than, Branch Greater Than, Branch Less Than Unsigned, Branch Greater Than Unsigned
 			// Jump And Link (unconditional jump)
-			OPCODE_BRANCH, OPCODE_JAL: begin
-				if (insn_opcode == OPCODE_BRANCH) begin
-					case (insn_funct3)
+			RiscVOpcode32::BRANCH, RiscVOpcode32::JAL: begin
+				if (insn.opcode == RiscVOpcode32::BRANCH) begin
+					case (insn.funct3)
 						3'b 000 /* BEQ  */,
 						3'b 001 /* BNE  */,
 						3'b 100 /* BLT  */,
@@ -957,7 +935,7 @@ module nerv #(
 					endcase
 				end else begin
 					next_wr = 1;
-					next_rd = npc;
+					next_rd = decode_alt_pc;
 				end
 
 				if ((decode_compeq_valid && compeq_result == decode_compeq_value) || (decode_complt_valid && complt_result == decode_complt_value))
@@ -971,33 +949,33 @@ module nerv #(
 				end
 			end
 			// load from memory into rd: Load Byte, Load Halfword, Load Word, Load Byte Unsigned, Load Halfword Unsigned
-			OPCODE_LOAD: begin
+			RiscVOpcode32::LOAD: begin
 				mem_rd_addr = rs1_value + imm_i_sext;
-				casez ({insn_funct3, mem_rd_addr[1:0]})
+				casez ({insn.funct3, mem_rd_addr[1:0]})
 					5'b 000_zz /* LB  */,
 					5'b 001_z0 /* LH  */,
 					5'b 010_00 /* LW  */,
 					5'b 100_zz /* LBU */,
 					5'b 101_z0 /* LHU */: begin
 						mem_rd_enable = 1;
-						mem_rd_reg = insn_rd;
-						mem_rd_func = {mem_rd_addr[1:0], insn_funct3};
+						mem_rd_reg = insn.rd;
+						mem_rd_func = {mem_rd_addr[1:0], insn.funct3};
 						mem_rd_addr = {mem_rd_addr[31:2], 2'b 00};
 					end
 					default: illinsn = 1;
 				endcase
 			end
 			// store to memory instructions: Store Byte, Store Halfword, Store Word
-			OPCODE_STORE: begin
+			RiscVOpcode32::STORE: begin
 				mem_wr_addr = rs1_value + imm_s_sext;
-				casez ({insn_funct3, mem_wr_addr[1:0]})
+				casez ({insn.funct3, mem_wr_addr[1:0]})
 					5'b 000_zz /* SB */,
 					5'b 001_z0 /* SH */,
 					5'b 010_00 /* SW */: begin
 						mem_wr_enable = 1;
 						mem_wr_data = rs2_value;
 						mem_wr_strb = 4'b 1111;
-						case (insn_funct3)
+						case (insn.funct3)
 							3'b 000 /* SB  */: begin mem_wr_strb = 4'b 0001; end
 							3'b 001 /* SH  */: begin mem_wr_strb = 4'b 0011; end
 							3'b 010 /* SW  */: begin mem_wr_strb = 4'b 1111; end
@@ -1011,8 +989,8 @@ module nerv #(
 			end
 			// immediate ALU instructions: Add Immediate, Set Less Than Immediate, Set Less Than Immediate Unsigned, XOR Immediate,
 			// OR Immediate, And Immediate, Shift Left Logical Immediate, Shift Right Logical Immediate, Shift Right Arithmetic Immediate
-			OPCODE_OP_IMM: begin
-				casez ({insn_funct7, insn_funct3})
+			RiscVOpcode32::OP_IMM: begin
+				casez ({insn.funct7, insn.funct3})
 					10'b zzzzzzz_000 /* ADDI  */: begin next_wr = 1; next_rd = rs1_value + imm_i_sext; end
 					10'b zzzzzzz_010 /* SLTI  */: begin next_wr = 1; next_rd = complt_result; end
 					10'b zzzzzzz_011 /* SLTIU */: begin next_wr = 1; next_rd = complt_result; end
@@ -1052,10 +1030,10 @@ module nerv #(
 					default: illinsn = 1;
 				endcase
 			end
-			OPCODE_OP: begin
+			RiscVOpcode32::OP: begin
 			// ALU instructions: Add, Subtract, Shift Left Logical, Set Left Than, Set Less Than Unsigned, XOR, Shift Right Logical,
 			// Shift Right Arithmetic, OR, AND
-				case ({insn_funct7, insn_funct3})
+				case ({insn.funct7, insn.funct3})
 					10'b 0000000_000 /* ADD  */: begin next_wr = 1; next_rd = rs1_value + rs2_value; end
 					10'b 0100000_000 /* SUB  */: begin next_wr = 1; next_rd = rs1_value - rs2_value; end
 					10'b 0000000_001 /* SLL  */: begin next_wr = 1; next_rd = shift_result; end
@@ -1098,10 +1076,10 @@ module nerv #(
 				endcase
 			end
 `ifdef NERV_CSR
-			OPCODE_SYSTEM: begin
-				case (insn_funct3)
+			RiscVOpcode32::SYSTEM: begin
+				case (insn.funct3)
 					3'b 000 : begin
-						case ({insn_funct7, insn_rs2})
+						case ({insn.funct7, insn.rs2})
 							12'b 0000000_00000 /* ECALL */:
 								begin
 									csr_mepc_next = { pc[31:2], 2'b00 };
@@ -1267,15 +1245,15 @@ module nerv #(
 			rvfi_intr <= next_rvfi_intr;
 			rvfi_mode <= 3;
 			rvfi_ixl <= 1;
-			rvfi_rs1_addr <= insn_rs1;
-			rvfi_rs2_addr <= insn_rs2;
+			rvfi_rs1_addr <= insn.rs1;
+			rvfi_rs2_addr <= insn.rs2;
 			rvfi_rs1_rdata <= rs1_value;
 			rvfi_rs2_rdata <= rs2_value;
 			rvfi_pc_rdata <= pc;
 			rvfi_pc_wdata <= npc;
 			if (dmem_valid) begin
 				rvfi_mem_addr <= dmem_addr;
-				case ({mem_rd_enable, insn_funct3})
+				case ({mem_rd_enable, insn.funct3})
 					4'b 1_000 /* LB  */: begin rvfi_mem_rmask <= 4'b 0001 << mem_rd_func[4:3]; end
 					4'b 1_001 /* LH  */: begin rvfi_mem_rmask <= 4'b 0011 << mem_rd_func[4:3]; end
 					4'b 1_010 /* LW  */: begin rvfi_mem_rmask <= 4'b 1111 << mem_rd_func[4:3]; end
