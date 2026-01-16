@@ -307,7 +307,23 @@ package RiscV;
 		return opcode_is_op(insn) && insn.funct7 == 7'b0000101 && insn.funct3 == RiscVOpcode32Op::MAX;
 	endfunction
 
+	function bit is_sub(Insn32 insn);
+		return opcode_is_op(insn) && insn.funct7 == 7'b0100000 && insn.funct3 == RiscVOpcode32Op::SUB;
+	endfunction
+
+	function bit is_xnor(Insn32 insn);
+		return opcode_is_op(insn) && insn.funct7 == 7'b0100000 && insn.funct3 == RiscVOpcode32Op::XNOR;
+	endfunction
+
 	function bit is_sra(Insn32 insn);
 		return opcode_is_op(insn) && insn.funct7 == 7'b0100000 && insn.funct3 == RiscVOpcode32Op::SRA;
+	endfunction
+
+	function bit is_orn(Insn32 insn);
+		return opcode_is_op(insn) && insn.funct7 == 7'b0100000 && insn.funct3 == RiscVOpcode32Op::ORN;
+	endfunction
+
+	function bit is_andn(Insn32 insn);
+		return opcode_is_op(insn) && insn.funct7 == 7'b0100000 && insn.funct3 == RiscVOpcode32Op::ANDN;
 	endfunction
 endpackage

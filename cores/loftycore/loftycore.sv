@@ -513,6 +513,7 @@ module nerv #(
 
 	// decode: miscellaneous
 	wire decode_rs1_is_imm = 0;
+
 	wire decode_rs2_is_imm = |{
 		// immediate shifts
 		RiscV::is_slli(insn),
@@ -521,13 +522,20 @@ module nerv #(
 		RiscV::is_bexti(insn),
 		// immediate comparisons
 		RiscV::is_slti(insn),
-		RiscV::is_sltiu(insn)
+		RiscV::is_sltiu(insn),
+		// immediate logic ops
+		RiscV::is_xori(insn),
+		RiscV::is_ori(insn),
+		RiscV::is_andi(insn),
+		RiscV::is_addi(insn)
+	};
+	wire decode_rs2_invert = |{
+		RiscV::is_sub(insn),
+		RiscV::is_xnor(insn),
+		RiscV::is_orn(insn),
+		RiscV::is_andn(insn)
 	};
 
-	wire is_shift_left = |{
-		RiscV::is_sll(insn),
-		RiscV::is_slli(insn)
-	};
 	wire decode_op_is_signed = |{
 		// signed shifts
 		RiscV::is_sra(insn),
@@ -541,6 +549,10 @@ module nerv #(
 		RiscV::is_slti(insn)
 	};
 
+	wire is_shift_left = |{
+		RiscV::is_sll(insn),
+		RiscV::is_slli(insn)
+	};
 	wire decode_bit_reverse_rs1 = is_shift_left;
 	wire decode_bit_reverse_rd  = is_shift_left;
 
@@ -566,7 +578,7 @@ module nerv #(
 	wire [31:0] add_result = 0;
 
 	// execute: less than comparator
-	wire [31:0] complt_rs2 = decode_rs2_is_imm ? imm_i_sext : rs2_value;
+	wire [31:0] complt_rs2 = decode_rs2_is_imm ? imm_i_sext : decode_rs2_invert ? ~rs2_value : rs2_value;
 	wire complt_signed     = $signed(rs1_value) < $signed(complt_rs2);
 	wire complt_unsigned   = rs1_value < complt_rs2;
 	wire complt_result     = decode_op_is_signed ? complt_signed : complt_unsigned;
@@ -991,12 +1003,12 @@ module nerv #(
 			// OR Immediate, And Immediate, Shift Left Logical Immediate, Shift Right Logical Immediate, Shift Right Arithmetic Immediate
 			RiscVOpcode32::OP_IMM: begin
 				casez ({insn.funct7, insn.funct3})
-					10'b zzzzzzz_000 /* ADDI  */: begin next_wr = 1; next_rd = rs1_value + imm_i_sext; end
+					10'b zzzzzzz_000 /* ADDI  */: begin next_wr = 1; next_rd = rs1_value + complt_rs2; end
 					10'b zzzzzzz_010 /* SLTI  */: begin next_wr = 1; next_rd = complt_result; end
 					10'b zzzzzzz_011 /* SLTIU */: begin next_wr = 1; next_rd = complt_result; end
-					10'b zzzzzzz_100 /* XORI  */: begin next_wr = 1; next_rd = rs1_value ^ imm_i_sext; end
-					10'b zzzzzzz_110 /* ORI   */: begin next_wr = 1; next_rd = rs1_value | imm_i_sext; end
-					10'b zzzzzzz_111 /* ANDI  */: begin next_wr = 1; next_rd = rs1_value & imm_i_sext; end
+					10'b zzzzzzz_100 /* XORI  */: begin next_wr = 1; next_rd = rs1_value ^ complt_rs2; end
+					10'b zzzzzzz_110 /* ORI   */: begin next_wr = 1; next_rd = rs1_value | complt_rs2; end
+					10'b zzzzzzz_111 /* ANDI  */: begin next_wr = 1; next_rd = rs1_value & complt_rs2; end
 					10'b 0000000_001 /* SLLI  */: begin next_wr = 1; next_rd = shift_result; end
 					10'b 0000000_101 /* SRLI  */: begin next_wr = 1; next_rd = shift_result; end
 					10'b 0100000_101 /* SRAI  */: begin next_wr = 1; next_rd = shift_result; end
@@ -1034,24 +1046,24 @@ module nerv #(
 			// ALU instructions: Add, Subtract, Shift Left Logical, Set Left Than, Set Less Than Unsigned, XOR, Shift Right Logical,
 			// Shift Right Arithmetic, OR, AND
 				case ({insn.funct7, insn.funct3})
-					10'b 0000000_000 /* ADD  */: begin next_wr = 1; next_rd = rs1_value + rs2_value; end
-					10'b 0100000_000 /* SUB  */: begin next_wr = 1; next_rd = rs1_value - rs2_value; end
+					10'b 0000000_000 /* ADD  */: begin next_wr = 1; next_rd = rs1_value + complt_rs2; end
+					10'b 0100000_000 /* SUB  */: begin next_wr = 1; next_rd = rs1_value + complt_rs2 + 1; end
 					10'b 0000000_001 /* SLL  */: begin next_wr = 1; next_rd = shift_result; end
 					10'b 0000000_010 /* SLT  */: begin next_wr = 1; next_rd = complt_result; end
 					10'b 0000000_011 /* SLTU */: begin next_wr = 1; next_rd = complt_result; end
-					10'b 0000000_100 /* XOR  */: begin next_wr = 1; next_rd = rs1_value ^ rs2_value; end
+					10'b 0000000_100 /* XOR  */: begin next_wr = 1; next_rd = rs1_value ^ complt_rs2; end
 					10'b 0000000_101 /* SRL  */: begin next_wr = 1; next_rd = shift_result; end
 					10'b 0100000_101 /* SRA  */: begin next_wr = 1; next_rd = shift_result; end
-					10'b 0000000_110 /* OR   */: begin next_wr = 1; next_rd = rs1_value | rs2_value; end
-					10'b 0000000_111 /* AND  */: begin next_wr = 1; next_rd = rs1_value & rs2_value; end
+					10'b 0000000_110 /* OR   */: begin next_wr = 1; next_rd = rs1_value | complt_rs2; end
+					10'b 0000000_111 /* AND  */: begin next_wr = 1; next_rd = rs1_value & complt_rs2; end
 					// Zba: Address generation
 					10'b 0010000_010 /* SH1ADD */: begin next_wr = 1; next_rd = rs2_value + {rs1_value[30:0], 1'b 0}; end
 					10'b 0010000_100 /* SH2ADD */: begin next_wr = 1; next_rd = rs2_value + {rs1_value[29:0], 2'b 0}; end
 					10'b 0010000_110 /* SH3ADD */: begin next_wr = 1; next_rd = rs2_value + {rs1_value[28:0], 3'b 0}; end
 					// Zbb: Basic bit-manipulation
-					10'b 0100000_111 /* ANDN   */: begin next_wr = 1; next_rd = rs1_value & ~rs2_value; end
-					10'b 0100000_110 /* ORN    */: begin next_wr = 1; next_rd = rs1_value | ~rs2_value; end
-					10'b 0100000_100 /* XNOR   */: begin next_wr = 1; next_rd = ~(rs1_value ^ rs2_value); end
+					10'b 0100000_111 /* ANDN   */: begin next_wr = 1; next_rd = rs1_value & complt_rs2; end
+					10'b 0100000_110 /* ORN    */: begin next_wr = 1; next_rd = rs1_value | complt_rs2; end
+					10'b 0100000_100 /* XNOR   */: begin next_wr = 1; next_rd = rs1_value ^ complt_rs2; end
 					10'b 0000101_110 /* MAX    */: begin next_wr = 1; next_rd = complt_result ? rs2_value : rs1_value; end
 					10'b 0000101_111 /* MAXU   */: begin next_wr = 1; next_rd = complt_result ? rs2_value : rs1_value; end
 					10'b 0000101_100 /* MIN    */: begin next_wr = 1; next_rd = complt_result ? rs1_value : rs2_value; end
