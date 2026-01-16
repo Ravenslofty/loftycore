@@ -501,7 +501,9 @@ module nerv #(
 	};
 	wire decode_complt_value = |{
 		RiscV::is_blt(insn),
-		RiscV::is_bltu(insn)
+		RiscV::is_bltu(insn),
+		RiscV::is_min(insn),
+		RiscV::is_minu(insn)
 	};
 	wire decode_compeq_valid = |{
 		RiscV::is_beq(insn),
@@ -527,13 +529,27 @@ module nerv #(
 		RiscV::is_xori(insn),
 		RiscV::is_ori(insn),
 		RiscV::is_andi(insn),
-		RiscV::is_addi(insn)
+		RiscV::is_addi(insn),
+		// immediate single-bit logic ops
+		RiscV::is_bclri(insn),
+		RiscV::is_bseti(insn),
+		RiscV::is_binvi(insn)
+	};
+	wire decode_rs2_single_bit = |{
+		RiscV::is_bclri(insn),
+		RiscV::is_binvi(insn),
+		RiscV::is_bseti(insn),
+		RiscV::is_bclr(insn),
+		RiscV::is_binv(insn),
+		RiscV::is_bset(insn)
 	};
 	wire decode_rs2_invert = |{
 		RiscV::is_sub(insn),
 		RiscV::is_xnor(insn),
 		RiscV::is_orn(insn),
-		RiscV::is_andn(insn)
+		RiscV::is_andn(insn),
+		RiscV::is_bclri(insn),
+		RiscV::is_bclr(insn)
 	};
 
 	wire decode_op_is_signed = |{
@@ -547,6 +563,10 @@ module nerv #(
 		RiscV::is_min(insn),
 		RiscV::is_max(insn),
 		RiscV::is_slti(insn)
+	};
+
+	wire decode_carry = |{
+		RiscV::is_sub(insn)
 	};
 
 	wire is_shift_left = |{
@@ -574,11 +594,8 @@ module nerv #(
 		end
 	endgenerate
 
-	// execute: arithmetic/logic unit
-	wire [31:0] add_result = 0;
-
 	// execute: less than comparator
-	wire [31:0] complt_rs2 = decode_rs2_is_imm ? imm_i_sext : decode_rs2_invert ? ~rs2_value : rs2_value;
+	wire [31:0] complt_rs2 = decode_rs2_is_imm ? imm_i_sext : rs2_value;
 	wire complt_signed     = $signed(rs1_value) < $signed(complt_rs2);
 	wire complt_unsigned   = rs1_value < complt_rs2;
 	wire complt_result     = decode_op_is_signed ? complt_signed : complt_unsigned;
@@ -586,6 +603,12 @@ module nerv #(
 	// execute: equality comparator
 	wire compeq_result     = rs1_value == rs2_value;
 
+	// execute: arithmetic/logic unit
+	wire [31:0] alu_rs2_s1 = decode_rs2_is_imm ? 1 << insn.rs2 : 1 << rs2_value[4:0];
+	wire [31:0] alu_rs2_s2 = decode_rs2_single_bit ? alu_rs2_s1 : complt_rs2;
+	wire [31:0] alu_rs2    = decode_rs2_invert ? ~alu_rs2_s2 : alu_rs2_s2;
+
+	wire [31:0] add_result = rs1_value + alu_rs2 + decode_carry;
 
 	// next write, next destination (rd) value & register
 	reg next_wr;
@@ -1003,14 +1026,17 @@ module nerv #(
 			// OR Immediate, And Immediate, Shift Left Logical Immediate, Shift Right Logical Immediate, Shift Right Arithmetic Immediate
 			RiscVOpcode32::OP_IMM: begin
 				casez ({insn.funct7, insn.funct3})
-					10'b zzzzzzz_000 /* ADDI  */: begin next_wr = 1; next_rd = rs1_value + complt_rs2; end
-					10'b zzzzzzz_010 /* SLTI  */: begin next_wr = 1; next_rd = complt_result; end
+					10'b zzzzzzz_000 /* ADDI  */: begin next_wr = 1; next_rd = add_result; end
+					10'b zzzzzzz_010 /* SLTI  */,
 					10'b zzzzzzz_011 /* SLTIU */: begin next_wr = 1; next_rd = complt_result; end
-					10'b zzzzzzz_100 /* XORI  */: begin next_wr = 1; next_rd = rs1_value ^ complt_rs2; end
-					10'b zzzzzzz_110 /* ORI   */: begin next_wr = 1; next_rd = rs1_value | complt_rs2; end
-					10'b zzzzzzz_111 /* ANDI  */: begin next_wr = 1; next_rd = rs1_value & complt_rs2; end
-					10'b 0000000_001 /* SLLI  */: begin next_wr = 1; next_rd = shift_result; end
-					10'b 0000000_101 /* SRLI  */: begin next_wr = 1; next_rd = shift_result; end
+					10'b 0110100_001 /* BINVI (Zbs) */,
+					10'b zzzzzzz_100 /* XORI  */: begin next_wr = 1; next_rd = rs1_value ^ alu_rs2; end
+					10'b 0010100_001 /* BSETI (Zbs) */,
+					10'b zzzzzzz_110 /* ORI   */: begin next_wr = 1; next_rd = rs1_value | alu_rs2; end
+					10'b 0100100_001 /* BCLRI (Zbs) */,
+					10'b zzzzzzz_111 /* ANDI  */: begin next_wr = 1; next_rd = rs1_value & alu_rs2; end
+					10'b 0000000_001 /* SLLI  */,
+					10'b 0000000_101 /* SRLI  */,
 					10'b 0100000_101 /* SRAI  */: begin next_wr = 1; next_rd = shift_result; end
 					// Zbb: Basic bit-manipulation
 					10'b 0110000_001: begin
@@ -1035,10 +1061,7 @@ module nerv #(
 					10'b 0000100_001 /* ZIP   */: begin next_wr = insn[24:20] == 5'b 01111; illinsn = !next_wr; next_rd = 0; for (int i=0; i<16; i=i+1) begin next_rd[2*i] = rs1_value[i]; next_rd[2*i+1] = rs1_value[i+16]; end end
 					10'b 0000100_101 /* UNZIP */: begin next_wr = insn[24:20] == 5'b 01111; illinsn = !next_wr; next_rd = 0; for (int i=0; i<16; i=i+1) begin next_rd[i] = rs1_value[2*i]; next_rd[i+16] = rs1_value[2*i+1]; end end
 					// Zbs: Single-bit instructions
-					10'b 0100100_001 /* BCLRI */: begin next_wr = 1; next_rd = rs1_value & ~(1 << insn[24:20]); end
 					10'b 0100100_101 /* BEXTI */: begin next_wr = 1; next_rd = shift_result[0]; end
-					10'b 0110100_001 /* BINVI */: begin next_wr = 1; next_rd = rs1_value ^ (1 << insn[24:20]); end
-					10'b 0010100_001 /* BSETI */: begin next_wr = 1; next_rd = rs1_value | (1 << insn[24:20]); end
 					default: illinsn = 1;
 				endcase
 			end
@@ -1046,29 +1069,32 @@ module nerv #(
 			// ALU instructions: Add, Subtract, Shift Left Logical, Set Left Than, Set Less Than Unsigned, XOR, Shift Right Logical,
 			// Shift Right Arithmetic, OR, AND
 				case ({insn.funct7, insn.funct3})
-					10'b 0000000_000 /* ADD  */: begin next_wr = 1; next_rd = rs1_value + complt_rs2; end
-					10'b 0100000_000 /* SUB  */: begin next_wr = 1; next_rd = rs1_value + complt_rs2 + 1; end
-					10'b 0000000_001 /* SLL  */: begin next_wr = 1; next_rd = shift_result; end
-					10'b 0000000_010 /* SLT  */: begin next_wr = 1; next_rd = complt_result; end
+					10'b 0000000_000 /* ADD  */,
+					10'b 0100000_000 /* SUB  */: begin next_wr = 1; next_rd = add_result; end
+					10'b 0000000_010 /* SLT  */,
 					10'b 0000000_011 /* SLTU */: begin next_wr = 1; next_rd = complt_result; end
-					10'b 0000000_100 /* XOR  */: begin next_wr = 1; next_rd = rs1_value ^ complt_rs2; end
-					10'b 0000000_101 /* SRL  */: begin next_wr = 1; next_rd = shift_result; end
+					10'b 0100000_100 /* XNOR (Zbb) */,
+					10'b 0110100_001 /* BINV (Zbs) */,
+					10'b 0000000_100 /* XOR  */: begin next_wr = 1; next_rd = rs1_value ^ alu_rs2; end
+					10'b 0000000_001 /* SLL  */,
+					10'b 0000000_101 /* SRL  */,
 					10'b 0100000_101 /* SRA  */: begin next_wr = 1; next_rd = shift_result; end
-					10'b 0000000_110 /* OR   */: begin next_wr = 1; next_rd = rs1_value | complt_rs2; end
-					10'b 0000000_111 /* AND  */: begin next_wr = 1; next_rd = rs1_value & complt_rs2; end
+					10'b 0100000_110 /* ORN  (Zbb) */,
+					10'b 0010100_001 /* BSET (Zbs) */,
+					10'b 0000000_110 /* OR   */: begin next_wr = 1; next_rd = rs1_value | alu_rs2; end
+					10'b 0100000_111 /* ANDN (Zbb) */,
+					10'b 0100100_001 /* BCLR (Zbs) */,
+					10'b 0000000_111 /* AND  */: begin next_wr = 1; next_rd = rs1_value & alu_rs2; end
 					// Zba: Address generation
 					10'b 0010000_010 /* SH1ADD */: begin next_wr = 1; next_rd = rs2_value + {rs1_value[30:0], 1'b 0}; end
 					10'b 0010000_100 /* SH2ADD */: begin next_wr = 1; next_rd = rs2_value + {rs1_value[29:0], 2'b 0}; end
 					10'b 0010000_110 /* SH3ADD */: begin next_wr = 1; next_rd = rs2_value + {rs1_value[28:0], 3'b 0}; end
 					// Zbb: Basic bit-manipulation
-					10'b 0100000_111 /* ANDN   */: begin next_wr = 1; next_rd = rs1_value & complt_rs2; end
-					10'b 0100000_110 /* ORN    */: begin next_wr = 1; next_rd = rs1_value | complt_rs2; end
-					10'b 0100000_100 /* XNOR   */: begin next_wr = 1; next_rd = rs1_value ^ complt_rs2; end
-					10'b 0000101_110 /* MAX    */: begin next_wr = 1; next_rd = complt_result ? rs2_value : rs1_value; end
-					10'b 0000101_111 /* MAXU   */: begin next_wr = 1; next_rd = complt_result ? rs2_value : rs1_value; end
-					10'b 0000101_100 /* MIN    */: begin next_wr = 1; next_rd = complt_result ? rs1_value : rs2_value; end
-					10'b 0000101_101 /* MINU   */: begin next_wr = 1; next_rd = complt_result ? rs1_value : rs2_value; end
-					10'b 0110000_001 /* ROL    */: begin next_wr = 1; next_rd = rs1_value << rs2_value[4:0] | (rs1_value >> (32 - rs2_value[4:0])); end
+					10'b 0000101_110 /* MAX    */,
+					10'b 0000101_111 /* MAXU   */,
+					10'b 0000101_100 /* MIN    */,
+					10'b 0000101_101 /* MINU   */: begin next_wr = 1; next_rd = complt_result == decode_complt_value ? rs1_value : rs2_value; end
+					10'b 0110000_001 /* ROL    */: begin next_wr = 1; next_rd = rs1_value << rs2_value[4:0] | (rs1_value >> (32 - rs2_value[4:0])); end // TODO: go mad with power and implement a funnel shifter
 					10'b 0110000_101 /* ROR    */: begin next_wr = 1; next_rd = rs1_value >> rs2_value[4:0] | (rs1_value << (32 - rs2_value[4:0])); end
 					10'b 0000100_100 /* PACK   */: begin next_wr = 1; next_rd = {rs2_value[15:0], rs1_value[15:0]}; end
 					10'b 0000100_111 /* PACKH  */: begin next_wr = 1; next_rd = {16'b0, rs2_value[7:0], rs1_value[7:0]}; end
@@ -1077,10 +1103,7 @@ module nerv #(
 					10'b 0000101_011 /* CLMULH */: begin next_wr = 1; next_rd = 0; for (int i=1; i<33; i=i+1) next_rd = ((rs2_value >> i) & 32'b1) ? next_rd ^ (rs1_value >> (32 - i)) : next_rd; end
 					10'b 0000101_010 /* CLMULR */: begin next_wr = 1; next_rd = 0; for (int i=0; i<32; i=i+1) next_rd = (rs2_value[i]) ? next_rd ^ (rs1_value >> (32 - i - 1)) : next_rd; end
 					// Zbs: Single-bit instructions
-					10'b 0100100_001 /* BCLR */: begin next_wr = 1; next_rd = rs1_value & ~(1 << rs2_value[4:0]); end
-					10'b 0100100_101 /* BEXT */: begin next_wr = 1; next_rd = shift_result[0]; end
-					10'b 0110100_001 /* BINV */: begin next_wr = 1; next_rd = rs1_value ^ (1 << rs2_value[4:0]); end
-					10'b 0010100_001 /* BSET */: begin next_wr = 1; next_rd = rs1_value | (1 << rs2_value[4:0]); end
+					10'b 0100100_101 /* BEXT   */: begin next_wr = 1; next_rd = shift_result[0]; end
 					// Zbkx: Crossbar permutations
 					10'b 0010100_010 /* XPERM4 */: begin next_wr = 1; next_rd = 0; for (int i=0; i<8; i=i+1) next_rd[i*4+:4] = (rs1_value >> (rs2_value[i*4+:4])) & 4'h f; end
 					10'b 0010100_100 /* XPERM8 */: begin next_wr = 1; next_rd = 0; for (int i=0; i<4; i=i+1) next_rd[i*8+:8] = (rs1_value >> (rs2_value[i*8+:8])) & 8'h ff; end

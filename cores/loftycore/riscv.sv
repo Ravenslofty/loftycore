@@ -149,6 +149,11 @@ package RiscVOpcode32OpImm;
 		ANDI  = 3'b111  // I
 	} Funct7Is0_Funct3;
 
+	// BSETI
+	typedef enum logic [2:0] {
+		BSETI = 3'b001  // Zbs
+	} Funct7Is20_Funct3;
+
 	typedef enum logic [2:0] {
 		SRAI = 3'b101  // I
 	} Funct7Is32_Funct3;
@@ -183,6 +188,11 @@ package RiscVOpcode32OpImm;
 	typedef enum logic [2:0] {
 		SEXTH = 3'b001 // Zbb
 	} Funct7Is48_Rs2Is5_Funct3;
+
+	// BINVI
+	typedef enum logic [2:0] {
+		BINVI = 3'b001 // Zbs
+	} Funct7Is52_Funct3;
 endpackage
 
 package RiscV;
@@ -278,12 +288,24 @@ package RiscV;
 		return opcode_is_op_imm(insn) && insn.funct3 == RiscVOpcode32OpImm::ANDI;
 	endfunction
 
+	function bit is_bseti(Insn32 insn);
+		return opcode_is_op_imm(insn) && insn.funct7 == 7'b0010100 && insn.funct3 == RiscVOpcode32OpImm::BSETI;
+	endfunction
+
 	function bit is_srai(Insn32 insn);
 		return opcode_is_op_imm(insn) && insn.funct7 == 7'b0100000 && insn.funct3 == RiscVOpcode32OpImm::SRAI;
 	endfunction
 
+	function bit is_bclri(Insn32 insn);
+		return opcode_is_op_imm(insn) && insn.funct7 == 7'b0100100 && insn.funct3 == RiscVOpcode32OpImm::BCLRI;
+	endfunction
+
 	function bit is_bexti(Insn32 insn);
 		return opcode_is_op_imm(insn) && insn.funct7 == 7'b0100100 && insn.funct3 == RiscVOpcode32OpImm::BEXTI;
+	endfunction
+
+	function bit is_binvi(Insn32 insn);
+		return opcode_is_op_imm(insn) && insn.funct7 == 7'b0110100 && insn.funct3 == RiscVOpcode32OpImm::BINVI;
 	endfunction
 
 	// instruction checking functions: OP opcode
@@ -303,8 +325,16 @@ package RiscV;
 		return opcode_is_op(insn) && insn.funct7 == 7'b0000101 && insn.funct3 == RiscVOpcode32Op::MIN;
 	endfunction
 
+	function bit is_minu(Insn32 insn);
+		return opcode_is_op(insn) && insn.funct7 == 7'b0000101 && insn.funct3 == RiscVOpcode32Op::MINU;
+	endfunction
+
 	function bit is_max(Insn32 insn);
 		return opcode_is_op(insn) && insn.funct7 == 7'b0000101 && insn.funct3 == RiscVOpcode32Op::MAX;
+	endfunction
+
+	function bit is_bset(Insn32 insn);
+		return opcode_is_op(insn) && insn.funct7 == 7'b0010100 && insn.funct3 == RiscVOpcode32Op::BSET;
 	endfunction
 
 	function bit is_sub(Insn32 insn);
@@ -325,5 +355,17 @@ package RiscV;
 
 	function bit is_andn(Insn32 insn);
 		return opcode_is_op(insn) && insn.funct7 == 7'b0100000 && insn.funct3 == RiscVOpcode32Op::ANDN;
+	endfunction
+
+	function bit is_bclr(Insn32 insn);
+		return opcode_is_op(insn) && insn.funct7 == 7'b0100100 && insn.funct3 == RiscVOpcode32Op::BCLR;
+	endfunction
+
+	function bit is_bext(Insn32 insn);
+		return opcode_is_op(insn) && insn.funct7 == 7'b0100100 && insn.funct3 == RiscVOpcode32Op::BEXT;
+	endfunction
+
+	function bit is_binv(Insn32 insn);
+		return opcode_is_op(insn) && insn.funct7 == 7'b0110100 && insn.funct3 == RiscVOpcode32Op::BINV;
 	endfunction
 endpackage
