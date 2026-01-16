@@ -210,7 +210,7 @@ package RiscV;
 	// immediate functions
 
 	function logic [31:0] immediate_u(Insn32 insn);
-		return insn[31:12] << 12;
+		return 32'(insn[31:12]) << 12;
 	endfunction
 
 	// opcode checking

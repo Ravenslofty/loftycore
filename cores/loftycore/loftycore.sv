@@ -441,8 +441,8 @@ module nerv #(
 	assign insn = imem_data;
 
 	// rs1 and rs2 are source for the instruction
-	wire [31:0] rs1_value = !insn.rs1 ? 0 : regfile[insn.rs1];
-	wire [31:0] rs2_value = !insn.rs2 ? 0 : regfile[insn.rs2];
+	wire [31:0] rs1_value = (insn.rs1 == 0) ? 0 : regfile[insn.rs1];
+	wire [31:0] rs2_value = (insn.rs2 == 0) ? 0 : regfile[insn.rs2];
 
 	// setup for I, S, B & J type instructions
 	// I - short immediates and loads
@@ -461,10 +461,10 @@ module nerv #(
 	wire [20:0] imm_j;
 	assign {imm_j[20], imm_j[10:1], imm_j[11], imm_j[19:12], imm_j[0]} = {insn[31:12], 1'b0};
 
-	wire [31:0] imm_i_sext = $signed(imm_i);
-	wire [31:0] imm_s_sext = $signed(imm_s);
-	wire [31:0] imm_b_sext = $signed(imm_b);
-	wire [31:0] imm_j_sext = $signed(imm_j);
+	wire [31:0] imm_i_sext = 32'($signed(imm_i));
+	wire [31:0] imm_s_sext = 32'($signed(imm_s));
+	wire [31:0] imm_b_sext = 32'($signed(imm_b));
+	wire [31:0] imm_j_sext = 32'($signed(imm_j));
 
 
 	localparam MCAUSE_MACHINE_SOFTWARE_INTERRUPT = 32'h80000003;
@@ -584,15 +584,10 @@ module nerv #(
 	wire [31:0] shift_output   = decode_op_is_signed ? shift_signed : shift_unsigned;
 	wire [31:0] shift_result;
 
-	generate
-		genvar i;
-		for (i=0; i<32; i=i+1) begin
-			assign shift_input[i] = decode_bit_reverse_rs1 ? rs1_value[31-i] : rs1_value[i];
-		end
-		for (i=0; i<32; i=i+1) begin
-			assign shift_result[i] = decode_bit_reverse_rd ? shift_output[31-i] : shift_output[i];
-		end
-	endgenerate
+	for (genvar i=0; i<32; i=i+1) begin: gen_shift
+		assign shift_input[i] = decode_bit_reverse_rs1 ? rs1_value[31-i] : rs1_value[i];
+		assign shift_result[i] = decode_bit_reverse_rd ? shift_output[31-i] : shift_output[i];
+	end
 
 	// execute: less than comparator
 	wire [31:0] complt_rs2 = decode_rs2_is_imm ? imm_i_sext : rs2_value;
@@ -608,7 +603,7 @@ module nerv #(
 	wire [31:0] alu_rs2_s2 = decode_rs2_single_bit ? alu_rs2_s1 : complt_rs2;
 	wire [31:0] alu_rs2    = decode_rs2_invert ? ~alu_rs2_s2 : alu_rs2_s2;
 
-	wire [31:0] add_result = rs1_value + alu_rs2 + decode_carry;
+	wire [31:0] add_result = rs1_value + alu_rs2 + 32'(decode_carry);
 
 	// next write, next destination (rd) value & register
 	reg next_wr;
@@ -638,20 +633,22 @@ module nerv #(
 	 *  CSR DEFINITIONS  *
 	 *********************/
 
+	reg [4:0] irq_num;
+
 	reg        csr_ack;
 	reg [31:0] csr_rdval;
 	reg [31:0] csr_next;
 
 	wire imem_valid = !mem_rd_enable_q && !mem_wr_enable_q && !imem_fault;
-	wire [ 1:0] csr_mode = (running && imem_valid && !irq_num && insn.opcode == RiscVOpcode32::SYSTEM) ? insn.funct3[1:0] : 2'b 00; // 00=None, 01=RW, 10=RS, 11=RC
+	wire [ 1:0] csr_mode = (running && imem_valid && irq_num == '0 && insn.opcode == RiscVOpcode32::SYSTEM) ? insn.funct3[1:0] : 2'b 00; // 00=None, 01=RW, 10=RS, 11=RC
 	wire [11:0] csr_addr = imm_i;
-	wire [31:0] csr_rsval = insn.funct3[2] ? insn.rs1 : rs1_value;
-	wire csr_ro = csr_mode && (csr_mode != 2'b01 && !insn.rs1);
+	wire [31:0] csr_rsval = insn.funct3[2] ? 32'(insn.rs1) : rs1_value;
+	wire csr_ro = csr_mode != 0 && (csr_mode != 2'b01 && insn.rs1 == 0);
 
 	integer hpm_idx, hpm_increment, hpm_event;
 
 `define NERV_CSR_REG_MRW(NAME, ADDR, VALUE)				\
-	wire csr_``NAME``_sel = csr_mode && csr_addr == ADDR;		\
+	wire csr_``NAME``_sel = csr_mode != 0 && csr_addr == ADDR;		\
 	reg [31:0] csr_``NAME``_value;					\
 	reg [31:0] csr_``NAME``_wdata;					\
 	reg [31:0] csr_``NAME``_next;					\
@@ -662,12 +659,12 @@ module nerv #(
 	end
 
 `define NERV_CSR_VAL_MRW(NAME, ADDR, VALUE)				\
-	wire csr_``NAME``_sel = csr_mode && csr_addr == ADDR;		\
+	wire csr_``NAME``_sel = csr_mode != 0 && csr_addr == ADDR;		\
 	wire [31:0] csr_``NAME``_wdata = csr_``NAME``_sel ? csr_next : csr_``NAME``_value; \
 	localparam [31:0] csr_``NAME``_value = VALUE;
 
 `define NERV_CSR_VAL_MRO(NAME, ADDR, VALUE)				\
-	wire csr_``NAME``_sel = csr_ro && csr_addr == ADDR;		\
+	wire csr_``NAME``_sel = csr_ro != 0 && csr_addr == ADDR;		\
 	localparam [31:0] csr_``NAME``_value = VALUE;
 
 `define NERV_CSR_ARR_DEF(ARRAY, DEPTH)					\
@@ -683,7 +680,7 @@ module nerv #(
 	end
 
 `define NERV_CSR_ARR_MRW(ARRAY, INDEX, NAME, ADDR)				\
-	wire csr_``NAME``_sel = csr_mode && csr_addr == ADDR;			\
+	wire csr_``NAME``_sel = csr_mode != 0 && csr_addr == ADDR;			\
 	wire [31:0] csr_``NAME``_value = csr_``ARRAY``_value[(INDEX)*32 +: 32];	\
 	wire [31:0] csr_``NAME``_wdata = csr_``ARRAY``_wdata[(INDEX)*32 +: 32];	\
 	wire [31:0] csr_``NAME``_next  = csr_``ARRAY``_next[(INDEX)*32 +: 32];  \
@@ -703,11 +700,10 @@ module nerv #(
 `endif // NERV_CSR
 
 	wire [31:0] irq_en;
-	reg [4:0] irq_num;
 	assign irq_en = irq & csr_mie_value;
 
 	// resolve interrupt priority
-	always @* begin
+	always_comb begin
 		if (irq_en[31]) irq_num = 5'd31;
 		else if (irq_en[30]) irq_num = 5'd30;
 		else if (irq_en[29]) irq_num = 5'd29;
@@ -730,10 +726,9 @@ module nerv #(
 		else irq_num = 5'd0;
 	end
 
-	reg condition;
-	reg condition_result;
+	reg [31:0] mem_rdata;
 
-	always @* begin
+	always_comb begin
 		// advance pc
 		npc = pc + 4;
 
@@ -767,19 +762,19 @@ module nerv #(
 
 		unique case (1'b1)
 `define NERV_CSR_REG_MRW(NAME, ADDR, VALUE)		\
-			csr_mode && csr_``NAME``_sel: begin		\
+			csr_mode != 0 && csr_``NAME``_sel: begin		\
 				csr_ack = 1;				\
 				csr_rdval = csr_``NAME``_value;	\
 			end
 
 `define NERV_CSR_VAL_MRW(NAME, ADDR, VALUE)		\
-			csr_mode && csr_``NAME``_sel: begin		\
+			csr_mode != 0 && csr_``NAME``_sel: begin		\
 				csr_ack = 1;				\
 				csr_rdval = csr_``NAME``_value;	\
 			end
 
 `define NERV_CSR_VAL_MRO(NAME, ADDR, VALUE)		\
-			csr_ro && csr_``NAME``_sel: begin		\
+			csr_ro != 0 && csr_``NAME``_sel: begin		\
 				csr_ack = 1;				\
 				csr_rdval = csr_``NAME``_value;	\
 			end
@@ -845,7 +840,7 @@ module nerv #(
 				end
 			endcase
 			{csr_hpm_counterh_next[(hpm_idx)*32 +: 32], csr_hpm_counter_next[(hpm_idx)*32 +: 32]} = 
-				{csr_hpm_counterh_next[(hpm_idx)*32 +: 32], csr_hpm_counter_next[(hpm_idx)*32 +: 32]} + hpm_increment;
+				{csr_hpm_counterh_next[(hpm_idx)*32 +: 32], csr_hpm_counter_next[(hpm_idx)*32 +: 32]} + 64'(hpm_increment);
 		end
 
 	// mstatus & mstatush - Machine Status
@@ -949,7 +944,7 @@ module nerv #(
 					end
 					default: illinsn = 1;
 				endcase
-				if (npc & 32'b 11) begin
+				if ((npc & 32'b11) != 0) begin
 					illinsn = 1;
 					npc = npc & ~32'b 11;
 				end
@@ -977,7 +972,7 @@ module nerv #(
 				else
 					npc = decode_next_pc;
 
-				if (npc & 32'b 11) begin
+				if ((npc & 32'b11) != 0) begin
 					illinsn = 1;
 					npc = npc & ~32'b 11;
 				end
@@ -1013,6 +1008,7 @@ module nerv #(
 							3'b 000 /* SB  */: begin mem_wr_strb = 4'b 0001; end
 							3'b 001 /* SH  */: begin mem_wr_strb = 4'b 0011; end
 							3'b 010 /* SW  */: begin mem_wr_strb = 4'b 1111; end
+							default: illinsn = 1;
 						endcase
 						mem_wr_data = mem_wr_data << (8*mem_wr_addr[1:0]);
 						mem_wr_strb = mem_wr_strb << mem_wr_addr[1:0];
@@ -1027,7 +1023,7 @@ module nerv #(
 				casez ({insn.funct7, insn.funct3})
 					10'b zzzzzzz_000 /* ADDI  */: begin next_wr = 1; next_rd = add_result; end
 					10'b zzzzzzz_010 /* SLTI  */,
-					10'b zzzzzzz_011 /* SLTIU */: begin next_wr = 1; next_rd = complt_result; end
+					10'b zzzzzzz_011 /* SLTIU */: begin next_wr = 1; next_rd = 32'(complt_result); end
 					10'b 0110100_001 /* BINVI (Zbs) */,
 					10'b zzzzzzz_100 /* XORI  */: begin next_wr = 1; next_rd = rs1_value ^ alu_rs2; end
 					10'b 0010100_001 /* BSETI (Zbs) */,
@@ -1042,9 +1038,9 @@ module nerv #(
 						casez (insn[24:20])
 							5'b 00000 /* CLZ    */: begin next_wr = 1; next_rd = 0; for (int i=0; i<32; i=i+1) next_rd = rs1_value[i] ? 0 : next_rd + 1; end
 							5'b 00001 /* CTZ    */: begin next_wr = 1; next_rd = 0; for (int i=32; i>0; i=i-1) next_rd = rs1_value[i-1] ? 0 : next_rd + 1; end
-							5'b 00010 /* CPOP   */: begin next_wr = 1; next_rd = 0; for (int i=0; i<32; i=i+1) next_rd = next_rd + rs1_value[i]; end
-							5'b 00100 /* SEXT.B */: begin next_wr = 1; next_rd = $signed(rs1_value[7:0]); end
-							5'b 00101 /* SEXT.H */: begin next_wr = 1; next_rd = $signed(rs1_value[15:0]); end
+							5'b 00010 /* CPOP   */: begin next_wr = 1; next_rd = 0; for (int i=0; i<32; i=i+1) next_rd = next_rd + 32'(rs1_value[i]); end
+							5'b 00100 /* SEXT.B */: begin next_wr = 1; next_rd = 32'($signed(rs1_value[7:0])); end
+							5'b 00101 /* SEXT.H */: begin next_wr = 1; next_rd = 32'($signed(rs1_value[15:0])); end
 							default: illinsn = 1;
 						endcase
 					end
@@ -1060,7 +1056,7 @@ module nerv #(
 					10'b 0000100_001 /* ZIP   */: begin next_wr = insn[24:20] == 5'b 01111; illinsn = !next_wr; next_rd = 0; for (int i=0; i<16; i=i+1) begin next_rd[2*i] = rs1_value[i]; next_rd[2*i+1] = rs1_value[i+16]; end end
 					10'b 0000100_101 /* UNZIP */: begin next_wr = insn[24:20] == 5'b 01111; illinsn = !next_wr; next_rd = 0; for (int i=0; i<16; i=i+1) begin next_rd[i] = rs1_value[2*i]; next_rd[i+16] = rs1_value[2*i+1]; end end
 					// Zbs: Single-bit instructions
-					10'b 0100100_101 /* BEXTI */: begin next_wr = 1; next_rd = shift_result[0]; end
+					10'b 0100100_101 /* BEXTI */: begin next_wr = 1; next_rd = 32'(shift_result[0]); end
 					default: illinsn = 1;
 				endcase
 			end
@@ -1071,13 +1067,13 @@ module nerv #(
 					10'b 0000000_000 /* ADD  */,
 					10'b 0100000_000 /* SUB  */: begin next_wr = 1; next_rd = add_result; end
 					10'b 0000000_010 /* SLT  */,
-					10'b 0000000_011 /* SLTU */: begin next_wr = 1; next_rd = complt_result; end
+					10'b 0000000_011 /* SLTU */: begin next_wr = 1; next_rd = 32'(complt_result); end
 					10'b 0100000_100 /* XNOR (Zbb) */,
 					10'b 0110100_001 /* BINV (Zbs) */,
 					10'b 0000000_100 /* XOR  */: begin next_wr = 1; next_rd = rs1_value ^ alu_rs2; end
 					10'b 0000000_001 /* SLL  */,
 					10'b 0000000_101 /* SRL  */,
-					10'b 0100000_101 /* SRA  */: begin next_wr = 1; next_rd = shift_result; end
+					10'b 0100000_101 /* SRA  */: begin next_wr = 1; next_rd = 32'(shift_result); end
 					10'b 0100000_110 /* ORN  (Zbb) */,
 					10'b 0010100_001 /* BSET (Zbs) */,
 					10'b 0000000_110 /* OR   */: begin next_wr = 1; next_rd = rs1_value | alu_rs2; end
@@ -1099,13 +1095,13 @@ module nerv #(
 					10'b 0000100_111 /* PACKH  */: begin next_wr = 1; next_rd = {16'b0, rs2_value[7:0], rs1_value[7:0]}; end
 					// Zbc: Carry-less multiplication
 					10'b 0000101_001 /* CLMUL  */: begin next_wr = 1; next_rd = 0; for (int i=0; i<32; i=i+1) next_rd = (rs2_value[i]) ? next_rd ^ (rs1_value << i) : next_rd; end
-					10'b 0000101_011 /* CLMULH */: begin next_wr = 1; next_rd = 0; for (int i=1; i<33; i=i+1) next_rd = ((rs2_value >> i) & 32'b1) ? next_rd ^ (rs1_value >> (32 - i)) : next_rd; end
+					10'b 0000101_011 /* CLMULH */: begin next_wr = 1; next_rd = 0; for (int i=1; i<32; i=i+1) next_rd = (((rs2_value >> i) & 32'b1) != 0) ? next_rd ^ (rs1_value >> (32 - i)) : next_rd; end
 					10'b 0000101_010 /* CLMULR */: begin next_wr = 1; next_rd = 0; for (int i=0; i<32; i=i+1) next_rd = (rs2_value[i]) ? next_rd ^ (rs1_value >> (32 - i - 1)) : next_rd; end
 					// Zbs: Single-bit instructions
-					10'b 0100100_101 /* BEXT   */: begin next_wr = 1; next_rd = shift_result[0]; end
+					10'b 0100100_101 /* BEXT   */: begin next_wr = 1; next_rd = 32'(shift_result[0]); end
 					// Zbkx: Crossbar permutations
-					10'b 0010100_010 /* XPERM4 */: begin next_wr = 1; next_rd = 0; for (int i=0; i<8; i=i+1) next_rd[i*4+:4] = (rs1_value >> (rs2_value[i*4+:4])) & 4'h f; end
-					10'b 0010100_100 /* XPERM8 */: begin next_wr = 1; next_rd = 0; for (int i=0; i<4; i=i+1) next_rd[i*8+:8] = (rs1_value >> (rs2_value[i*8+:8])) & 8'h ff; end
+					10'b 0010100_010 /* XPERM4 */: begin next_wr = 1; next_rd = 0; for (int i=0; i<8; i=i+1) next_rd[i*4+:4] = 4'(rs1_value >> (rs2_value[i*4+:4])); end
+					10'b 0010100_100 /* XPERM8 */: begin next_wr = 1; next_rd = 0; for (int i=0; i<4; i=i+1) next_rd[i*8+:8] = 8'(rs1_value >> (rs2_value[i*8+:8])); end
 					default: illinsn = 1;
 				endcase
 			end
@@ -1191,12 +1187,12 @@ module nerv #(
 			wr_rd = mem_rd_reg_q;
 			next_rd = mem_rdata;
 `endif
-		end else if (irq_num!=0) begin
+		end else if (irq_num != 0) begin
 			// if there's a pending IRQ, take it
 			csr_mepc_next = { pc[31:2], 2'b00 };
-			csr_mcause_next = 1 << 31 | irq_num;
-			if (csr_mtvec_value & 1)
-				npc = (csr_mtvec_value & ~3) + (irq_num << 2);
+			csr_mcause_next = 1 << 31 | 32'(irq_num);
+			if (csr_mtvec_value[0])
+				npc = (csr_mtvec_value & ~3) + 32'(irq_num) << 2;
 			else
 				npc = csr_mtvec_value & ~3;
 			csr_mstatus_next[7] = 1; // MPIE to 1
@@ -1224,7 +1220,6 @@ module nerv #(
 		end
 	end
 
-	reg [31:0] mem_rdata;
 `ifdef NERV_RVFI
 	reg next_rvfi_intr;
 	reg rvfi_trap_q;
@@ -1241,10 +1236,10 @@ module nerv #(
 	always @* begin
 		mem_rdata = dmem_rdata >> (8*mem_rd_func_q[4:3]);
 		case (mem_rd_func_q[2:0])
-			3'b 000 /* LB  */: begin mem_rdata = $signed(mem_rdata[7:0]); end
-			3'b 001 /* LH  */: begin mem_rdata = $signed(mem_rdata[15:0]); end
-			3'b 100 /* LBU */: begin mem_rdata = mem_rdata[7:0]; end
-			3'b 101 /* LHU */: begin mem_rdata = mem_rdata[15:0]; end
+			3'b 000 /* LB  */: begin mem_rdata = 32'($signed(mem_rdata[7:0])); end
+			3'b 001 /* LH  */: begin mem_rdata = 32'($signed(mem_rdata[15:0])); end
+			3'b 100 /* LBU */: begin mem_rdata = 32'(mem_rdata[7:0]); end
+			3'b 101 /* LHU */: begin mem_rdata = 32'(mem_rdata[15:0]); end
 		endcase
 	end
 
@@ -1288,11 +1283,11 @@ module nerv #(
 			if (dmem_valid) begin
 				rvfi_mem_addr <= dmem_addr;
 				case ({mem_rd_enable, insn.funct3})
-					4'b 1_000 /* LB  */: begin rvfi_mem_rmask <= 4'b 0001 << mem_rd_func[4:3]; end
-					4'b 1_001 /* LH  */: begin rvfi_mem_rmask <= 4'b 0011 << mem_rd_func[4:3]; end
-					4'b 1_010 /* LW  */: begin rvfi_mem_rmask <= 4'b 1111 << mem_rd_func[4:3]; end
+					4'b 1_000 /* LB  */,
 					4'b 1_100 /* LBU */: begin rvfi_mem_rmask <= 4'b 0001 << mem_rd_func[4:3]; end
+					4'b 1_001 /* LH  */,
 					4'b 1_101 /* LHU */: begin rvfi_mem_rmask <= 4'b 0011 << mem_rd_func[4:3]; end
+					4'b 1_010 /* LW  */: begin rvfi_mem_rmask <= 4'b 1111 << mem_rd_func[4:3]; end
 					default: rvfi_mem_rmask <= 0;
 				endcase
 				rvfi_mem_wmask <= dmem_wstrb;
