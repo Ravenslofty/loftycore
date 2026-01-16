@@ -230,6 +230,14 @@ package RiscV;
 		return insn.opcode == RiscVOpcode32::OP;
 	endfunction
 
+	function bit opcode_is_auipc(Insn32 insn);
+		return insn.opcode == RiscVOpcode32::AUIPC;
+	endfunction
+
+	function bit opcode_is_lui(Insn32 insn);
+		return insn.opcode == RiscVOpcode32::LUI;
+	endfunction
+
 	// instruction checking functions: BRANCH opcode
 	function bit is_beq(Insn32 insn);
 		return opcode_is_branch(insn) && insn.funct3 == RiscVOpcode32Branch::BEQ;

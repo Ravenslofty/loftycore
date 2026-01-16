@@ -930,15 +930,14 @@ module nerv #(
 
 		// act on opcodes
 		case (insn.opcode)
-			// Load Upper Immediate
-			RiscVOpcode32::LUI: begin
+			// Load Upper Immediate, Add Upper Immediate to Program Counter
+			RiscVOpcode32::LUI, RiscVOpcode32::AUIPC: begin
 				next_wr = 1;
-				next_rd = RiscV::immediate_u(insn);
-			end
-			// Add Upper Immediate to Program Counter
-			RiscVOpcode32::AUIPC: begin
-				next_wr = 1;
-				next_rd = RiscV::immediate_u(insn) + pc;
+				if (RiscV::opcode_is_lui(insn)) begin
+					next_rd = RiscV::immediate_u(insn);
+				end else begin
+					next_rd = RiscV::immediate_u(insn) + pc;
+				end
 			end
 			// Jump And Link Register (indirect jump)
 			RiscVOpcode32::JALR: begin
