@@ -57,6 +57,16 @@ package RiscVOpcode32;
 	} Opcode32;
 endpackage
 
+package RiscVOpcode32Load;
+	typedef enum logic [2:0] {
+		LB  = 3'b000, // I
+		LH  = 3'b001, // I
+		LW  = 3'b010, // I
+		LBU = 3'b100, // I
+		LHU = 3'b101  // I
+	} Funct3;
+endpackage
+
 package RiscVOpcode32Branch;
 	typedef enum logic [2:0] {
 		BEQ  = 3'b000, // I
@@ -193,6 +203,17 @@ package RiscVOpcode32OpImm;
 	typedef enum logic [2:0] {
 		BINVI = 3'b001 // Zbs
 	} Funct7Is52_Funct3;
+
+	// BREV8
+	typedef enum logic [2:0] {
+		BREV8 = 3'b101 // Zbb
+	} Funct7Is52_Rs2Is7_Funct3;
+
+	// REV8
+	typedef enum logic [2:0] {
+		REV8  = 3'b101 // Zbb
+	} Funct7Is52_Rs2Is24_Funct3;
+
 endpackage
 
 package RiscV;
@@ -214,6 +235,10 @@ package RiscV;
 	endfunction
 
 	// opcode checking
+	function bit opcode_is_load(Insn32 insn);
+		return insn.opcode == RiscVOpcode32::LOAD;
+	endfunction
+
 	function bit opcode_is_branch(Insn32 insn);
 		return insn.opcode == RiscVOpcode32::BRANCH;
 	endfunction
@@ -236,6 +261,27 @@ package RiscV;
 
 	function bit opcode_is_lui(Insn32 insn);
 		return insn.opcode == RiscVOpcode32::LUI;
+	endfunction
+
+	// instruction checking functions: LOAD opcode
+	function bit is_lb(Insn32 insn);
+		return opcode_is_load(insn) && insn.funct3 == RiscVOpcode32Load::LB;
+	endfunction
+
+	function bit is_lh(Insn32 insn);
+		return opcode_is_load(insn) && insn.funct3 == RiscVOpcode32Load::LH;
+	endfunction
+
+	function bit is_lw(Insn32 insn);
+		return opcode_is_load(insn) && insn.funct3 == RiscVOpcode32Load::LW;
+	endfunction
+
+	function bit is_lbu(Insn32 insn);
+		return opcode_is_load(insn) && insn.funct3 == RiscVOpcode32Load::LBU;
+	endfunction
+
+	function bit is_lhu(Insn32 insn);
+		return opcode_is_load(insn) && insn.funct3 == RiscVOpcode32Load::LHU;
 	endfunction
 
 	// instruction checking functions: BRANCH opcode
@@ -314,6 +360,14 @@ package RiscV;
 
 	function bit is_binvi(Insn32 insn);
 		return opcode_is_op_imm(insn) && insn.funct7 == 7'b0110100 && insn.funct3 == RiscVOpcode32OpImm::BINVI;
+	endfunction
+
+	function bit is_rev8(Insn32 insn);
+		return opcode_is_op_imm(insn) && insn.rs2 == 24 && insn.funct7 == 7'b0110100 && insn.funct3 == RiscVOpcode32OpImm::REV8;
+	endfunction
+
+	function bit is_brev8(Insn32 insn);
+		return opcode_is_op_imm(insn) && insn.rs2 == 7 && insn.funct7 == 7'b0110100 && insn.funct3 == RiscVOpcode32OpImm::BREV8;
 	endfunction
 
 	// instruction checking functions: OP opcode

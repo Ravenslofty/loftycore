@@ -516,6 +516,10 @@ module nerv #(
 	// decode: miscellaneous
 	wire decode_rs1_is_imm = 0;
 
+	wire decode_rs2_is_zero = |{
+		RiscV::is_rev8(insn),
+		RiscV::is_brev8(insn)
+	};
 	wire decode_rs2_is_imm = |{
 		// immediate shifts
 		RiscV::is_slli(insn),
@@ -573,19 +577,45 @@ module nerv #(
 		RiscV::is_sll(insn),
 		RiscV::is_slli(insn)
 	};
-	wire decode_bit_reverse_rs1 = is_shift_left;
-	wire decode_bit_reverse_rd  = is_shift_left;
+	wire decode_byte_reverse_rs1 = is_shift_left || RiscV::is_rev8(insn);
+	wire decode_bit_reverse_rs1  = is_shift_left || RiscV::is_brev8(insn);
+	wire decode_bit_reverse_rd   = is_shift_left;
+
+	/*enum Opcode {
+		UpperImmediate,
+		JumpRegister,
+		JumpConditional,
+		Load,
+		Store,
+		Add,
+		SetIfLessThan,
+		Xor,
+		Or,
+		And,
+		ShiftRight,
+		CountLeadingZeroes,
+		CountTrailingZeroes,
+		CountPopulation,
+		SignExtend,
+		RotateRight,
+		OrCombine
+
+	};*/
 
 	// execute: shifter
-	wire [4:0]  shift_rs2      = decode_rs2_is_imm ? insn.rs2 : rs2_value[4:0];
+	wire [4:0]  shift_rs2      = decode_rs2_is_zero ? '0 : decode_rs2_is_imm ? insn.rs2 : rs2_value[4:0];
+	wire [31:0] shift_byte_reverse;
 	wire [31:0] shift_input;
 	wire [31:0] shift_signed   = $signed(shift_input) >>> shift_rs2;
 	wire [31:0] shift_unsigned = shift_input >> shift_rs2;
 	wire [31:0] shift_output   = decode_op_is_signed ? shift_signed : shift_unsigned;
 	wire [31:0] shift_result;
 
-	for (genvar i=0; i<32; i=i+1) begin: gen_shift
-		assign shift_input[i] = decode_bit_reverse_rs1 ? rs1_value[31-i] : rs1_value[i];
+	for (genvar i=0; i<32; i=i+1) begin: gen_bitrev
+		localparam curr_byte = i / 8;
+		localparam curr_bit  = i % 8;
+		assign shift_byte_reverse[i] = decode_byte_reverse_rs1 ? rs1_value[8*(3-curr_byte) + curr_bit] : rs1_value[8*curr_byte + curr_bit];
+		assign shift_input[i] = decode_bit_reverse_rs1 ? shift_byte_reverse[8*curr_byte + (7-curr_bit)] : shift_byte_reverse[8*curr_byte + curr_bit];
 		assign shift_result[i] = decode_bit_reverse_rd ? shift_output[31-i] : shift_output[i];
 	end
 
@@ -989,7 +1019,7 @@ module nerv #(
 						mem_rd_enable = 1;
 						mem_rd_reg = insn.rd;
 						mem_rd_func = {mem_rd_addr[1:0], insn.funct3};
-						mem_rd_addr = {mem_rd_addr[31:2], 2'b 00};
+						mem_rd_addr = {mem_rd_addr[31:2], 2'b00};
 					end
 					default: illinsn = 1;
 				endcase
@@ -1033,6 +1063,13 @@ module nerv #(
 					10'b 0000000_001 /* SLLI  */,
 					10'b 0000000_101 /* SRLI  */,
 					10'b 0100000_101 /* SRAI  */: begin next_wr = 1; next_rd = shift_result; end
+					10'b 0110100_101: begin
+						casez (insn[24:20])
+							5'b 11000 /* REV8  */,
+							5'b 00111 /* BREV8 */: begin next_wr = 1; next_rd = shift_result; end
+							default: illinsn = 1;
+						endcase
+					end
 					// Zbb: Basic bit-manipulation
 					10'b 0110000_001: begin
 						casez (insn[24:20])
@@ -1046,13 +1083,6 @@ module nerv #(
 					end
 					10'b 0110000_101 /* RORI  */: begin next_wr = 1; next_rd = rs1_value >> insn[24:20] | (rs1_value << (32 - insn[24:20])); end
 					10'b 0010100_101 /* ORC.B */: begin next_wr = insn[24:20] == 5'b 00111; illinsn = !next_wr; next_rd = 0; for (int i=0; i<4; i=i+1) next_rd[i*8 +: 8] = {8{|rs1_value[i*8 +: 8]}}; end
-					10'b 0110100_101: begin
-						casez (insn[24:20])
-							5'b 11000 /* REV8  */: begin next_wr = 1; next_rd = 0; for (int i=0; i<4; i=i+1) next_rd[i*8 +: 8] = rs1_value[(4-i)*8 - 1 -: 8]; end
-							5'b 00111 /* BREV8 */: begin next_wr = 1; next_rd = 0; for (int i=0; i<4; i=i+1) for (int j=0; j<8; j=j+1) next_rd[i*8 + j] = rs1_value[i*8 + 7 - j]; end
-							default: illinsn = 1;
-						endcase
-					end
 					10'b 0000100_001 /* ZIP   */: begin next_wr = insn[24:20] == 5'b 01111; illinsn = !next_wr; next_rd = 0; for (int i=0; i<16; i=i+1) begin next_rd[2*i] = rs1_value[i]; next_rd[2*i+1] = rs1_value[i+16]; end end
 					10'b 0000100_101 /* UNZIP */: begin next_wr = insn[24:20] == 5'b 01111; illinsn = !next_wr; next_rd = 0; for (int i=0; i<16; i=i+1) begin next_rd[i] = rs1_value[2*i]; next_rd[i+16] = rs1_value[2*i+1]; end end
 					// Zbs: Single-bit instructions
