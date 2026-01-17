@@ -577,8 +577,8 @@ module nerv #(
 		RiscV::is_sll(insn),
 		RiscV::is_slli(insn)
 	};
-	wire decode_byte_reverse_rs1 = is_shift_left || RiscV::is_rev8(insn);
-	wire decode_bit_reverse_rs1  = is_shift_left || RiscV::is_brev8(insn);
+	wire decode_byte_reverse_rs1 = is_shift_left || RiscV::is_rev8(insn) || RiscV::is_clz(insn);
+	wire decode_bit_reverse_rs1  = is_shift_left || RiscV::is_brev8(insn) || RiscV::is_clz(insn);
 	wire decode_bit_reverse_rd   = is_shift_left;
 
 	/*enum Opcode {
@@ -1073,8 +1073,8 @@ module nerv #(
 					// Zbb: Basic bit-manipulation
 					10'b 0110000_001: begin
 						casez (insn[24:20])
-							5'b 00000 /* CLZ    */: begin next_wr = 1; next_rd = 0; for (int i=0; i<32; i=i+1) next_rd = rs1_value[i] ? 0 : next_rd + 1; end
-							5'b 00001 /* CTZ    */: begin next_wr = 1; next_rd = 0; for (int i=32; i>0; i=i-1) next_rd = rs1_value[i-1] ? 0 : next_rd + 1; end
+							5'b 00000 /* CLZ    */,
+							5'b 00001 /* CTZ    */: begin next_wr = 1; next_rd = 0; for (int i=32; i>0; i=i-1) next_rd = shift_input[i-1] ? 0 : next_rd + 1; end
 							5'b 00010 /* CPOP   */: begin next_wr = 1; next_rd = 0; for (int i=0; i<32; i=i+1) next_rd = next_rd + 32'(rs1_value[i]); end
 							5'b 00100 /* SEXT.B */: begin next_wr = 1; next_rd = 32'($signed(rs1_value[7:0])); end
 							5'b 00101 /* SEXT.H */: begin next_wr = 1; next_rd = 32'($signed(rs1_value[15:0])); end
@@ -1103,7 +1103,7 @@ module nerv #(
 					10'b 0000000_100 /* XOR  */: begin next_wr = 1; next_rd = rs1_value ^ alu_rs2; end
 					10'b 0000000_001 /* SLL  */,
 					10'b 0000000_101 /* SRL  */,
-					10'b 0100000_101 /* SRA  */: begin next_wr = 1; next_rd = 32'(shift_result); end
+					10'b 0100000_101 /* SRA  */: begin next_wr = 1; next_rd = shift_result; end
 					10'b 0100000_110 /* ORN  (Zbb) */,
 					10'b 0010100_001 /* BSET (Zbs) */,
 					10'b 0000000_110 /* OR   */: begin next_wr = 1; next_rd = rs1_value | alu_rs2; end

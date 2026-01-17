@@ -358,16 +358,24 @@ package RiscV;
 		return opcode_is_op_imm(insn) && insn.funct7 == 7'b0100100 && insn.funct3 == RiscVOpcode32OpImm::BEXTI;
 	endfunction
 
+	function bit is_clz(Insn32 insn);
+		return opcode_is_op_imm(insn) && insn.funct7 == 7'b0110000 && insn.rs2 == 0 && insn.funct3 == RiscVOpcode32OpImm::CLZ;
+	endfunction
+
+	function bit is_ctz(Insn32 insn);
+		return opcode_is_op_imm(insn) && insn.funct7 == 7'b0110000 && insn.rs2 == 1 && insn.funct3 == RiscVOpcode32OpImm::CTZ;
+	endfunction
+
 	function bit is_binvi(Insn32 insn);
 		return opcode_is_op_imm(insn) && insn.funct7 == 7'b0110100 && insn.funct3 == RiscVOpcode32OpImm::BINVI;
 	endfunction
 
 	function bit is_rev8(Insn32 insn);
-		return opcode_is_op_imm(insn) && insn.rs2 == 24 && insn.funct7 == 7'b0110100 && insn.funct3 == RiscVOpcode32OpImm::REV8;
+		return opcode_is_op_imm(insn) && insn.funct7 == 7'b0110100 && insn.rs2 == 24 && insn.funct3 == RiscVOpcode32OpImm::REV8;
 	endfunction
 
 	function bit is_brev8(Insn32 insn);
-		return opcode_is_op_imm(insn) && insn.rs2 == 7 && insn.funct7 == 7'b0110100 && insn.funct3 == RiscVOpcode32OpImm::BREV8;
+		return opcode_is_op_imm(insn) && insn.funct7 == 7'b0110100 && insn.rs2 == 7 && insn.funct3 == RiscVOpcode32OpImm::BREV8;
 	endfunction
 
 	// instruction checking functions: OP opcode
