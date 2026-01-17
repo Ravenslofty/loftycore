@@ -17,6 +17,183 @@
  *
  */
 
+package lc_uop;
+
+	typedef enum logic [4:0] {
+		Illegal,
+		UpperImmediate,
+		JumpRegister,
+		JumpConditional,
+		Load,
+		Store,
+		Add,
+		SetIfLessThan,
+		Xor,
+		Or,
+		And,
+		ShiftRight,
+		CountTrailingZeroes,
+		CountPopulation,
+		SignExtend,
+		RotateRight,
+		OrCombine
+	} Opcode;
+
+	typedef struct packed {
+		logic        complt_valid;
+		logic        complt_value;
+		logic        compeq_valid;
+		logic        compeq_value;
+		logic        rs1_byte_reverse;
+		logic        rs1_bit_reverse;
+		logic        rs2_is_imm;
+		logic        rs2_is_single_bit;
+		logic        rs2_invert;
+		logic        rd_bit_reverse;
+		logic        carry_in;
+		logic        is_signed;
+		Opcode       op;
+	} Control;
+
+	typedef struct packed {
+		logic [31:0] rs1;
+		logic [31:0] rs2;
+		logic [31:0] next_pc;
+		logic [31:0] alt_next_pc;
+		logic [31:0] pc;
+		Control      ctrl;
+	} Uop;
+
+endpackage
+
+module lc_fe_decoder(
+	input  RiscV::Insn32 insn,
+	input  logic [31:0]  pc,
+
+	output lc_uop::Uop   uop
+);
+	// I - short immediates and loads
+	logic [31:0] imm_i = RiscV::immediate_i_sext(insn);
+
+	// S - stores
+	logic [31:0] imm_s = RiscV::immediate_s(insn);
+
+	// B - conditionals
+	logic [31:0] imm_b = RiscV::immediate_b(insn);
+
+	// J - unconditional jumps
+	logic [31:0] imm_j = RiscV::immediate_j(insn);
+
+	// decode: next-pc/alt-pc
+	wire [31:0] decode_sequential_pc = pc + 4;
+	wire [31:0] decode_branch_pc     = pc + imm_b;
+	wire [31:0] decode_jump_pc       = pc + imm_j;
+
+	assign uop.next_pc     = RiscV::opcode_is_jal(insn)    ? decode_jump_pc   : decode_sequential_pc;
+	assign uop.alt_next_pc = RiscV::opcode_is_branch(insn) ? decode_branch_pc : decode_sequential_pc;
+	assign uop.pc          = pc;
+
+	assign uop.ctrl.complt_valid = |{
+		RiscV::is_blt(insn),
+		RiscV::is_bge(insn),
+		RiscV::is_bltu(insn),
+		RiscV::is_bgeu(insn)
+	};
+	assign uop.ctrl.complt_value = |{
+		RiscV::is_blt(insn),
+		RiscV::is_bltu(insn),
+		RiscV::is_min(insn),
+		RiscV::is_minu(insn)
+	};
+	assign uop.ctrl.compeq_valid = |{
+		RiscV::is_beq(insn),
+		RiscV::is_bne(insn)
+	};
+	assign uop.ctrl.compeq_value = |{
+		RiscV::is_beq(insn)
+	};
+
+	wire is_shift_left = RiscV::is_sll(insn) || RiscV::is_slli(insn);
+	assign uop.ctrl.byte_reverse_rs1 = is_shift_left || RiscV::is_rev8(insn)  || RiscV::is_clz(insn);
+	assign uop.ctrl.bit_reverse_rs1  = is_shift_left || RiscV::is_brev8(insn) || RiscV::is_clz(insn);
+
+	wire decode_rs2_is_zero = |{
+		RiscV::is_rev8(insn),
+		RiscV::is_brev8(insn)
+	};
+	assign uop.ctrl.rs2_is_imm = |{
+		// immediate shifts
+		RiscV::is_slli(insn),
+		RiscV::is_srli(insn),
+		RiscV::is_srai(insn),
+		RiscV::is_bexti(insn),
+		// immediate comparisons
+		RiscV::is_slti(insn),
+		RiscV::is_sltiu(insn),
+		// immediate logic ops
+		RiscV::is_xori(insn),
+		RiscV::is_ori(insn),
+		RiscV::is_andi(insn),
+		RiscV::is_addi(insn),
+		// immediate single-bit logic ops
+		RiscV::is_bclri(insn),
+		RiscV::is_bseti(insn),
+		RiscV::is_binvi(insn)
+	};
+	assign uop.ctrl.rs2_single_bit = |{
+		RiscV::is_bclri(insn),
+		RiscV::is_binvi(insn),
+		RiscV::is_bseti(insn),
+		RiscV::is_bclr(insn),
+		RiscV::is_binv(insn),
+		RiscV::is_bset(insn)
+	};
+	assign uop.ctrl.rs2_invert = |{
+		RiscV::is_sub(insn),
+		RiscV::is_xnor(insn),
+		RiscV::is_orn(insn),
+		RiscV::is_andn(insn),
+		RiscV::is_bclri(insn),
+		RiscV::is_bclr(insn)
+	};
+
+	assign uop.ctrl.bit_reverse_rd = is_shift_left;
+
+	assign uop.ctrl.carry_in = RiscV::is_sub(insn);
+
+	assign uop.ctrl.is_signed = |{
+		// signed shifts
+		RiscV::is_sra(insn),
+		RiscV::is_srai(insn),
+		// signed comparisons
+		RiscV::is_blt(insn),
+		RiscV::is_bge(insn),
+		RiscV::is_slt(insn),
+		RiscV::is_min(insn),
+		RiscV::is_max(insn),
+		RiscV::is_slti(insn)
+	};
+
+	always_comb begin
+		unique if (RiscV::opcode_is_load(insn))
+			uop.ctrl.op = lc_uop::Load;
+		else if (RiscV::opcode_is_store(insn))
+			uop.ctrl.op = lc_uop::Store;
+		else if (RiscV::opcode_is_branch(insn) || RiscV::opcode_is_jal(insn))
+			uop.ctrl.op = lc_uop::JumpConditional;
+		else if (RiscV::opcode_is_jalr(insn))
+			uop.ctrl.op = lc_uop::JumpRegister;
+		else if (RiscV::opcode_is_op_imm(insn)) begin
+
+		end else if (RiscV::opcode_is_op(insn)) begin
+
+		end else if (RiscV::opcode_is_auipc(insn) || RiscV::opcode_is_lui(insn))
+			uop.ctrl.op = lc_uop::UpperImmediate;
+		else
+			uop.ctrl.op = lc_uop::Illegal;
+	end
+endmodule
+
 `define NERV_CSR
 
 `ifdef NERV_CSR
@@ -240,7 +417,7 @@
 	`NERV_CSR_ARR_MRW(hpm_counterh, 28, mhpmcounter28h,  12'h B9C)			\
 	`NERV_CSR_ARR_MRW(hpm_counterh, 29, mhpmcounter29h,  12'h B9D)			\
 	`NERV_CSR_ARR_MRW(hpm_counterh, 30, mhpmcounter30h,  12'h B9E)			\
-	`NERV_CSR_ARR_MRW(hpm_counterh, 31, mhpmcounter31h,  12'h B9F)		
+	`NERV_CSR_ARR_MRW(hpm_counterh, 31, mhpmcounter31h,  12'h B9F)
 
 `define NERV_COUNTER_SETUP_CSRS /* Machine Counter Setup CSRs */			\
 	/* mcountinhibit is optional */							\
@@ -278,7 +455,7 @@
 	`NERV_CSR_ARR_MRW(hpm_event, 29, mhpmevent29,        12'h 33D)			\
 	`NERV_CSR_ARR_MRW(hpm_event, 30, mhpmevent30,        12'h 33E)			\
 	`NERV_CSR_ARR_MRW(hpm_event, 31, mhpmevent31,        12'h 33F)
- 
+
 `define NERV_CUSTOM_CSRS /* Custom CSR for testing */					\
 	`NERV_CSR_REG_MRW(custom,            12'h BC0, 32'h 0000_0000)			\
 	`NERV_CSR_VAL_MRO(custom_ro,         12'h FC0, 32'h dead_beef)
@@ -446,25 +623,17 @@ module nerv #(
 
 	// setup for I, S, B & J type instructions
 	// I - short immediates and loads
-	wire [11:0] imm_i;
-	assign imm_i = insn[31:20];
+	wire [11:0] imm_i      = RiscV::immediate_i(insn);
+	wire [31:0] imm_i_sext = RiscV::immediate_i_sext(insn);
 
 	// S - stores
-	wire [11:0] imm_s;
-	assign imm_s[11:5] = insn.funct7, imm_s[4:0] = insn.rd;
+	wire [31:0] imm_s_sext = RiscV::immediate_s(insn);
 
 	// B - conditionals
-	wire [12:0] imm_b;
-	assign {imm_b[12], imm_b[10:5]} = insn.funct7, {imm_b[4:1], imm_b[11]} = insn.rd, imm_b[0] = 1'b0;
+	wire [31:0] imm_b_sext = RiscV::immediate_b(insn);
 
 	// J - unconditional jumps
-	wire [20:0] imm_j;
-	assign {imm_j[20], imm_j[10:1], imm_j[11], imm_j[19:12], imm_j[0]} = {insn[31:12], 1'b0};
-
-	wire [31:0] imm_i_sext = 32'($signed(imm_i));
-	wire [31:0] imm_s_sext = 32'($signed(imm_s));
-	wire [31:0] imm_b_sext = 32'($signed(imm_b));
-	wire [31:0] imm_j_sext = 32'($signed(imm_j));
+	wire [31:0] imm_j_sext = RiscV::immediate_j(insn);
 
 
 	localparam MCAUSE_MACHINE_SOFTWARE_INTERRUPT = 32'h80000003;
@@ -580,27 +749,6 @@ module nerv #(
 	wire decode_byte_reverse_rs1 = is_shift_left || RiscV::is_rev8(insn) || RiscV::is_clz(insn);
 	wire decode_bit_reverse_rs1  = is_shift_left || RiscV::is_brev8(insn) || RiscV::is_clz(insn);
 	wire decode_bit_reverse_rd   = is_shift_left;
-
-	/*enum Opcode {
-		UpperImmediate,
-		JumpRegister,
-		JumpConditional,
-		Load,
-		Store,
-		Add,
-		SetIfLessThan,
-		Xor,
-		Or,
-		And,
-		ShiftRight,
-		CountLeadingZeroes,
-		CountTrailingZeroes,
-		CountPopulation,
-		SignExtend,
-		RotateRight,
-		OrCombine
-
-	};*/
 
 	// execute: shifter
 	wire [4:0]  shift_rs2      = decode_rs2_is_zero ? '0 : decode_rs2_is_imm ? insn.rs2 : rs2_value[4:0];
@@ -869,7 +1017,7 @@ module nerv #(
 					hpm_increment = 0;
 				end
 			endcase
-			{csr_hpm_counterh_next[(hpm_idx)*32 +: 32], csr_hpm_counter_next[(hpm_idx)*32 +: 32]} = 
+			{csr_hpm_counterh_next[(hpm_idx)*32 +: 32], csr_hpm_counter_next[(hpm_idx)*32 +: 32]} =
 				{csr_hpm_counterh_next[(hpm_idx)*32 +: 32], csr_hpm_counter_next[(hpm_idx)*32 +: 32]} + 64'(hpm_increment);
 		end
 

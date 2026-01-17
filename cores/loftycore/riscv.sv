@@ -229,9 +229,28 @@ package RiscV;
 	} Insn32;
 
 	// immediate functions
+	function logic [11:0] immediate_i(Insn32 insn);
+		return {insn.funct7, insn.rs2};
+	endfunction
+
+	function logic [31:0] immediate_i_sext(Insn32 insn);
+		return 32'($signed(immediate_i(insn)));
+	endfunction
+
+	function logic [31:0] immediate_s(Insn32 insn);
+		return 32'($signed({insn.funct7, insn.rd}));
+	endfunction
+
+	function logic [31:0] immediate_b(Insn32 insn);
+		return 32'($signed({insn.funct7[6], insn.rd[0], insn.funct7[5:0], insn.rd[4:1], 1'b0}));
+	endfunction
 
 	function logic [31:0] immediate_u(Insn32 insn);
-		return 32'(insn[31:12]) << 12;
+		return 32'({insn.funct7, insn.rs2, insn.rs1, insn.funct3}) << 12;
+	endfunction
+
+	function logic [31:0] immediate_j(Insn32 insn);
+		return 32'($signed({insn.funct7[6], insn.rs1, insn.funct3, insn.rs2[0], insn.funct7[5:0], insn.rs2[4:1], 1'b0}));
 	endfunction
 
 	// opcode checking
@@ -239,8 +258,16 @@ package RiscV;
 		return insn.opcode == RiscVOpcode32::LOAD;
 	endfunction
 
+	function bit opcode_is_store(Insn32 insn);
+		return insn.opcode == RiscVOpcode32::STORE;
+	endfunction
+
 	function bit opcode_is_branch(Insn32 insn);
 		return insn.opcode == RiscVOpcode32::BRANCH;
+	endfunction
+
+	function bit opcode_is_jalr(Insn32 insn);
+		return insn.opcode == RiscVOpcode32::JALR;
 	endfunction
 
 	function bit opcode_is_jal(Insn32 insn);
