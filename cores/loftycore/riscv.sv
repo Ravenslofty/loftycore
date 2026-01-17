@@ -174,6 +174,11 @@ package RiscVOpcode32OpImm;
 		BEXTI = 3'b101  // Zbs
 	} Funct7Is36_Funct3;
 
+	// RORI
+	typedef enum logic [2:0] {
+		RORI = 3'b101  // Zbb
+	} Funct7Is48_Funct3;
+
 	// CLZ
 	typedef enum logic [2:0] {
 		CLZ  = 3'b001  // Zbb
@@ -387,6 +392,10 @@ package RiscV;
 
 	function bit is_bexti(Insn32 insn);
 		return opcode_is_op_imm(insn) && insn.funct7 == 7'b0100100 && insn.funct3 == RiscVOpcode32OpImm::BEXTI;
+	endfunction
+
+	function bit is_rori(Insn32 insn);
+		return opcode_is_op_imm(insn) && insn.funct7 == 7'b0110000 && insn.funct3 == RiscVOpcode32OpImm::RORI;
 	endfunction
 
 	function bit is_clz(Insn32 insn);

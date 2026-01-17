@@ -56,7 +56,8 @@ package lc_uop;
 
 	typedef struct packed {
 		logic [4:0]  rs1;
-		logic [31:0] rs2;
+		logic [4:0]  rs2;
+		logic [31:0] imm;
 		logic [4:0]  rd;
 		logic [31:0] next_pc;
 		logic [31:0] alt_next_pc;
@@ -95,26 +96,27 @@ module lc_fe_decoder(
 	};
 
 	// we need to override shift amount to allow [B]REV8 to be implemented as shift-by-zero
-	wire rs2_is_zero = |{
+	wire imm_is_zero = |{
 		RiscV::is_rev8(insn),
 		RiscV::is_brev8(insn)
 	};
 
 	always_comb begin
 		uop.rs1 = (RiscV::opcode_is_lui(insn) || RiscV::opcode_is_auipc(insn)) ? '0 : insn.rs1;
+		uop.rs2 = insn.rs2;
+		uop.rd  = insn.rd;
 		unique if (insn_has_imm_i)
-			uop.rs2 = rs2_is_zero ? '0 : imm_i;
+			uop.imm = imm_is_zero ? '0 : imm_i;
 		else if (RiscV::opcode_is_store(insn))
-			uop.rs2 = imm_s;
+			uop.imm = imm_s;
 		else if (RiscV::opcode_is_lui(insn))
-			uop.rs2 = imm_u;
+			uop.imm = imm_u;
 		else if (RiscV::opcode_is_auipc(insn))
-			uop.rs2 = imm_u + pc;
+			uop.imm = imm_u + pc;
 		else if (RiscV::opcode_is_jal(insn))
-			uop.rs2 = imm_j;
+			uop.imm = imm_j;
 		else
-			uop.rs2 = insn.rs2;
-		uop.rd = insn.rd;
+			uop.imm = '0;
 	end
 
 	// decode: next-pc/alt-pc
@@ -171,10 +173,20 @@ module lc_fe_decoder(
 		RiscV::is_ori(insn),
 		RiscV::is_andi(insn),
 		RiscV::is_addi(insn),
+		RiscV::is_rori(insn),
 		// immediate single-bit logic ops
 		RiscV::is_bclri(insn),
 		RiscV::is_bseti(insn),
-		RiscV::is_binvi(insn)
+		RiscV::is_binvi(insn),
+		// count leading zeroes
+		RiscV::is_clz(insn),
+		// loads
+		RiscV::opcode_is_load(insn),
+		// stores
+		RiscV::opcode_is_store(insn),
+		// jumps
+		RiscV::opcode_is_jal(insn),
+		RiscV::opcode_is_jalr(insn)
 	};
 	assign uop.ctrl.rs2_is_single_bit = |{
 		RiscV::is_bclri(insn),
@@ -653,7 +665,7 @@ module nerv #(
 
 	// rs1 and rs2 are source for the instruction
 	wire [31:0] rs1_value = (uop.rs1 == 0) ? 0 : regfile[uop.rs1];
-	wire [31:0] rs2_value = (insn.rs2 == 0) ? 0 : regfile[insn.rs2];
+	wire [31:0] rs2_value = (uop.rs2 == 0) ? 0 : regfile[uop.rs2];
 
 	// setup for I, S, B & J type instructions
 	// I - short immediates and loads
@@ -687,7 +699,7 @@ module nerv #(
 	localparam IRQ_MASK = 32'hFFFF0888;
 
 	// execute: shifter
-	wire [4:0]  shift_rs2      = uop.ctrl.rs2_is_imm ? uop.rs2 : rs2_value[4:0];
+	wire [4:0]  shift_rs2      = uop.ctrl.rs2_is_imm ? uop.imm[4:0] : rs2_value[4:0];
 	wire [31:0] shift_byte_reverse;
 	wire [31:0] shift_input;
 	wire [31:0] shift_signed   = $signed(shift_input) >>> shift_rs2;
@@ -704,7 +716,7 @@ module nerv #(
 	end
 
 	// execute: less than comparator
-	wire [31:0] complt_rs2 = uop.ctrl.rs2_is_imm ? uop.rs2 : rs2_value;
+	wire [31:0] complt_rs2 = uop.ctrl.rs2_is_imm ? uop.imm : rs2_value;
 	wire complt_signed     = $signed(rs1_value) < $signed(complt_rs2);
 	wire complt_unsigned   = rs1_value < complt_rs2;
 	wire complt_result     = uop.ctrl.is_signed ? complt_signed : complt_unsigned;
@@ -713,7 +725,7 @@ module nerv #(
 	wire compeq_result     = rs1_value == rs2_value;
 
 	// execute: arithmetic/logic unit
-	wire [31:0] alu_rs2_s1 = uop.ctrl.rs2_is_imm ? 1 << uop.rs2[4:0] : 1 << rs2_value[4:0];
+	wire [31:0] alu_rs2_s1 = uop.ctrl.rs2_is_imm ? 1 << uop.imm[4:0] : 1 << rs2_value[4:0];
 	wire [31:0] alu_rs2_s2 = uop.ctrl.rs2_is_single_bit ? alu_rs2_s1 : complt_rs2;
 	wire [31:0] alu_rs2    = uop.ctrl.rs2_invert ? ~alu_rs2_s2 : alu_rs2_s2;
 
@@ -1051,7 +1063,7 @@ module nerv #(
 					3'b 000 /* JALR */: begin
 						next_wr = 1;
 						next_rd = npc;
-						npc = (rs1_value + uop.rs2) & ~32'b 1;
+						npc = (rs1_value + uop.imm) & ~32'b 1;
 					end
 					default: illinsn = 1;
 				endcase
@@ -1386,7 +1398,7 @@ module nerv #(
 			rvfi_mode <= 3;
 			rvfi_ixl <= 1;
 			rvfi_rs1_addr <= uop.rs1;
-			rvfi_rs2_addr <= insn.rs2;
+			rvfi_rs2_addr <= uop.rs2;
 			rvfi_rs1_rdata <= rs1_value;
 			rvfi_rs2_rdata <= rs2_value;
 			rvfi_pc_rdata <= pc;
