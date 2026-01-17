@@ -114,8 +114,8 @@ module lc_fe_decoder(
 	};
 
 	wire is_shift_left = RiscV::is_sll(insn) || RiscV::is_slli(insn);
-	assign uop.ctrl.byte_reverse_rs1 = is_shift_left || RiscV::is_rev8(insn)  || RiscV::is_clz(insn);
-	assign uop.ctrl.bit_reverse_rs1  = is_shift_left || RiscV::is_brev8(insn) || RiscV::is_clz(insn);
+	assign uop.ctrl.rs1_byte_reverse = is_shift_left || RiscV::is_rev8(insn)  || RiscV::is_clz(insn);
+	assign uop.ctrl.rs1_bit_reverse  = is_shift_left || RiscV::is_brev8(insn) || RiscV::is_clz(insn);
 
 	wire decode_rs2_is_zero = |{
 		RiscV::is_rev8(insn),
@@ -140,7 +140,7 @@ module lc_fe_decoder(
 		RiscV::is_bseti(insn),
 		RiscV::is_binvi(insn)
 	};
-	assign uop.ctrl.rs2_single_bit = |{
+	assign uop.ctrl.rs2_is_single_bit = |{
 		RiscV::is_bclri(insn),
 		RiscV::is_binvi(insn),
 		RiscV::is_bseti(insn),
