@@ -58,6 +58,7 @@ package lc_uop;
 	typedef struct packed {
 		logic [31:0] rs1;
 		logic [31:0] rs2;
+		logic [4:0]  rd;
 		logic [31:0] next_pc;
 		logic [31:0] alt_next_pc;
 		logic [31:0] pc;
@@ -73,16 +74,49 @@ module lc_fe_decoder(
 	output lc_uop::Uop   uop
 );
 	// I - short immediates and loads
-	logic [31:0] imm_i = RiscV::immediate_i_sext(insn);
+	wire [31:0] imm_i   = RiscV::immediate_i_sext(insn);
 
 	// S - stores
-	logic [31:0] imm_s = RiscV::immediate_s(insn);
+	wire [31:0] imm_s   = RiscV::immediate_s(insn);
 
 	// B - conditionals
-	logic [31:0] imm_b = RiscV::immediate_b(insn);
+	wire [31:0] imm_b   = RiscV::immediate_b(insn);
+
+	// U - long immediates
+	wire [31:0] imm_u   = RiscV::immediate_u(insn);
 
 	// J - unconditional jumps
-	logic [31:0] imm_j = RiscV::immediate_j(insn);
+	wire [31:0] imm_j   = RiscV::immediate_j(insn);
+
+	wire insn_has_imm_i = |{
+		RiscV::opcode_is_load(insn),
+		RiscV::opcode_is_jalr(insn),
+		RiscV::opcode_is_op_imm(insn),
+		RiscV::opcode_is_system(insn)
+	};
+
+	// we need to override shift amount to allow [B]REV8 to be implemented as shift-by-zero
+	wire rs2_is_zero = |{
+		RiscV::is_rev8(insn),
+		RiscV::is_brev8(insn)
+	};
+
+	always_comb begin
+		uop.rs1 = /*(RiscV::opcode_is_lui(insn) || RiscV::opcode_is_auipc(insn)) ? '0 :*/ insn.rs1;
+		unique if (insn_has_imm_i)
+			uop.rs2 = rs2_is_zero ? '0 : imm_i;
+		else if (RiscV::opcode_is_store(insn))
+			uop.rs2 = imm_s;
+		else if (RiscV::opcode_is_lui(insn))
+			uop.rs2 = imm_u;
+		else if (RiscV::opcode_is_auipc(insn))
+			uop.rs2 = imm_u + pc;
+		else if (RiscV::opcode_is_jal(insn))
+			uop.rs2 = imm_j;
+		else
+			uop.rs2 = insn.rs2;
+		uop.rd = insn.rd;
+	end
 
 	// decode: next-pc/alt-pc
 	wire [31:0] decode_sequential_pc = pc + 4;
@@ -93,6 +127,7 @@ module lc_fe_decoder(
 	assign uop.alt_next_pc = RiscV::opcode_is_branch(insn) ? decode_branch_pc : decode_sequential_pc;
 	assign uop.pc          = pc;
 
+	// uop control field
 	assign uop.ctrl.complt_valid = |{
 		RiscV::is_blt(insn),
 		RiscV::is_bge(insn),
@@ -117,16 +152,15 @@ module lc_fe_decoder(
 	assign uop.ctrl.rs1_byte_reverse = is_shift_left || RiscV::is_rev8(insn)  || RiscV::is_clz(insn);
 	assign uop.ctrl.rs1_bit_reverse  = is_shift_left || RiscV::is_brev8(insn) || RiscV::is_clz(insn);
 
-	wire decode_rs2_is_zero = |{
-		RiscV::is_rev8(insn),
-		RiscV::is_brev8(insn)
-	};
 	assign uop.ctrl.rs2_is_imm = |{
 		// immediate shifts
 		RiscV::is_slli(insn),
 		RiscV::is_srli(insn),
 		RiscV::is_srai(insn),
 		RiscV::is_bexti(insn),
+		// bit/byte reverse
+		RiscV::is_rev8(insn),
+		RiscV::is_brev8(insn),
 		// immediate comparisons
 		RiscV::is_slti(insn),
 		RiscV::is_sltiu(insn),
@@ -183,11 +217,11 @@ module lc_fe_decoder(
 			uop.ctrl.op = lc_uop::JumpConditional;
 		else if (RiscV::opcode_is_jalr(insn))
 			uop.ctrl.op = lc_uop::JumpRegister;
-		else if (RiscV::opcode_is_op_imm(insn)) begin
+		/*else if (RiscV::opcode_is_op_imm(insn)) begin
 
 		end else if (RiscV::opcode_is_op(insn)) begin
 
-		end else if (RiscV::opcode_is_auipc(insn) || RiscV::opcode_is_lui(insn))
+		end*/ else if (RiscV::opcode_is_auipc(insn) || RiscV::opcode_is_lui(insn))
 			uop.ctrl.op = lc_uop::UpperImmediate;
 		else
 			uop.ctrl.op = lc_uop::Illegal;
@@ -652,136 +686,42 @@ module nerv #(
 
 	localparam IRQ_MASK = 32'hFFFF0888;
 
-
-	// decode: next-pc/alt-pc
-	wire [31:0] decode_sequential_pc = pc + 4;
-	wire [31:0] decode_branch_pc     = pc + imm_b_sext;
-	wire [31:0] decode_jump_pc       = pc + imm_j_sext;
-
-	wire [31:0] decode_next_pc = RiscV::opcode_is_jal(insn)    ? decode_jump_pc   : decode_sequential_pc;
-	wire [31:0] decode_alt_pc  = RiscV::opcode_is_branch(insn) ? decode_branch_pc : decode_sequential_pc;
-
-	// decode: condition
-	wire decode_complt_valid = |{
-		RiscV::is_blt(insn),
-		RiscV::is_bge(insn),
-		RiscV::is_bltu(insn),
-		RiscV::is_bgeu(insn)
-	};
-	wire decode_complt_value = |{
-		RiscV::is_blt(insn),
-		RiscV::is_bltu(insn),
-		RiscV::is_min(insn),
-		RiscV::is_minu(insn)
-	};
-	wire decode_compeq_valid = |{
-		RiscV::is_beq(insn),
-		RiscV::is_bne(insn)
-	};
-	wire decode_compeq_value = |{
-		RiscV::is_beq(insn)
-	};
-
 	// decode: miscellaneous
-	wire decode_rs1_is_imm = 0;
-
-	wire decode_rs2_is_zero = |{
-		RiscV::is_rev8(insn),
-		RiscV::is_brev8(insn)
-	};
-	wire decode_rs2_is_imm = |{
-		// immediate shifts
-		RiscV::is_slli(insn),
-		RiscV::is_srli(insn),
-		RiscV::is_srai(insn),
-		RiscV::is_bexti(insn),
-		// immediate comparisons
-		RiscV::is_slti(insn),
-		RiscV::is_sltiu(insn),
-		// immediate logic ops
-		RiscV::is_xori(insn),
-		RiscV::is_ori(insn),
-		RiscV::is_andi(insn),
-		RiscV::is_addi(insn),
-		// immediate single-bit logic ops
-		RiscV::is_bclri(insn),
-		RiscV::is_bseti(insn),
-		RiscV::is_binvi(insn)
-	};
-	wire decode_rs2_single_bit = |{
-		RiscV::is_bclri(insn),
-		RiscV::is_binvi(insn),
-		RiscV::is_bseti(insn),
-		RiscV::is_bclr(insn),
-		RiscV::is_binv(insn),
-		RiscV::is_bset(insn)
-	};
-	wire decode_rs2_invert = |{
-		RiscV::is_sub(insn),
-		RiscV::is_xnor(insn),
-		RiscV::is_orn(insn),
-		RiscV::is_andn(insn),
-		RiscV::is_bclri(insn),
-		RiscV::is_bclr(insn)
-	};
-
-	wire decode_op_is_signed = |{
-		// signed shifts
-		RiscV::is_sra(insn),
-		RiscV::is_srai(insn),
-		// signed comparisons
-		RiscV::is_blt(insn),
-		RiscV::is_bge(insn),
-		RiscV::is_slt(insn),
-		RiscV::is_min(insn),
-		RiscV::is_max(insn),
-		RiscV::is_slti(insn)
-	};
-
-	wire decode_carry = |{
-		RiscV::is_sub(insn)
-	};
-
-	wire is_shift_left = |{
-		RiscV::is_sll(insn),
-		RiscV::is_slli(insn)
-	};
-	wire decode_byte_reverse_rs1 = is_shift_left || RiscV::is_rev8(insn) || RiscV::is_clz(insn);
-	wire decode_bit_reverse_rs1  = is_shift_left || RiscV::is_brev8(insn) || RiscV::is_clz(insn);
-	wire decode_bit_reverse_rd   = is_shift_left;
+	lc_uop::Uop uop;
+	lc_fe_decoder decoder(.*);
 
 	// execute: shifter
-	wire [4:0]  shift_rs2      = decode_rs2_is_zero ? '0 : decode_rs2_is_imm ? insn.rs2 : rs2_value[4:0];
+	wire [4:0]  shift_rs2      = uop.ctrl.rs2_is_imm ? uop.rs2 : rs2_value[4:0];
 	wire [31:0] shift_byte_reverse;
 	wire [31:0] shift_input;
 	wire [31:0] shift_signed   = $signed(shift_input) >>> shift_rs2;
 	wire [31:0] shift_unsigned = shift_input >> shift_rs2;
-	wire [31:0] shift_output   = decode_op_is_signed ? shift_signed : shift_unsigned;
+	wire [31:0] shift_output   = uop.ctrl.is_signed ? shift_signed : shift_unsigned;
 	wire [31:0] shift_result;
 
 	for (genvar i=0; i<32; i=i+1) begin: gen_bitrev
 		localparam curr_byte = i / 8;
 		localparam curr_bit  = i % 8;
-		assign shift_byte_reverse[i] = decode_byte_reverse_rs1 ? rs1_value[8*(3-curr_byte) + curr_bit] : rs1_value[8*curr_byte + curr_bit];
-		assign shift_input[i] = decode_bit_reverse_rs1 ? shift_byte_reverse[8*curr_byte + (7-curr_bit)] : shift_byte_reverse[8*curr_byte + curr_bit];
-		assign shift_result[i] = decode_bit_reverse_rd ? shift_output[31-i] : shift_output[i];
+		assign shift_byte_reverse[i] = uop.ctrl.rs1_byte_reverse ? rs1_value[8*(3-curr_byte) + curr_bit] : rs1_value[8*curr_byte + curr_bit];
+		assign shift_input[i] = uop.ctrl.rs1_bit_reverse ? shift_byte_reverse[8*curr_byte + (7-curr_bit)] : shift_byte_reverse[8*curr_byte + curr_bit];
+		assign shift_result[i] = uop.ctrl.rd_bit_reverse ? shift_output[31-i] : shift_output[i];
 	end
 
 	// execute: less than comparator
-	wire [31:0] complt_rs2 = decode_rs2_is_imm ? imm_i_sext : rs2_value;
+	wire [31:0] complt_rs2 = uop.ctrl.rs2_is_imm ? uop.rs2 : rs2_value;
 	wire complt_signed     = $signed(rs1_value) < $signed(complt_rs2);
 	wire complt_unsigned   = rs1_value < complt_rs2;
-	wire complt_result     = decode_op_is_signed ? complt_signed : complt_unsigned;
+	wire complt_result     = uop.ctrl.is_signed ? complt_signed : complt_unsigned;
 
 	// execute: equality comparator
 	wire compeq_result     = rs1_value == rs2_value;
 
 	// execute: arithmetic/logic unit
-	wire [31:0] alu_rs2_s1 = decode_rs2_is_imm ? 1 << insn.rs2 : 1 << rs2_value[4:0];
-	wire [31:0] alu_rs2_s2 = decode_rs2_single_bit ? alu_rs2_s1 : complt_rs2;
-	wire [31:0] alu_rs2    = decode_rs2_invert ? ~alu_rs2_s2 : alu_rs2_s2;
+	wire [31:0] alu_rs2_s1 = uop.ctrl.rs2_is_imm ? 1 << uop.rs2[4:0] : 1 << rs2_value[4:0];
+	wire [31:0] alu_rs2_s2 = uop.ctrl.rs2_is_single_bit ? alu_rs2_s1 : complt_rs2;
+	wire [31:0] alu_rs2    = uop.ctrl.rs2_invert ? ~alu_rs2_s2 : alu_rs2_s2;
 
-	wire [31:0] add_result = rs1_value + alu_rs2 + 32'(decode_carry);
+	wire [31:0] add_result = rs1_value + alu_rs2 + 32'(uop.ctrl.carry_in);
 
 	// next write, next destination (rd) value & register
 	reg next_wr;
@@ -1106,11 +1046,7 @@ module nerv #(
 			// Load Upper Immediate, Add Upper Immediate to Program Counter
 			RiscVOpcode32::LUI, RiscVOpcode32::AUIPC: begin
 				next_wr = 1;
-				if (RiscV::opcode_is_lui(insn)) begin
-					next_rd = RiscV::immediate_u(insn);
-				end else begin
-					next_rd = RiscV::immediate_u(insn) + pc;
-				end
+				next_rd = uop.rs2;
 			end
 			// Jump And Link Register (indirect jump)
 			RiscVOpcode32::JALR: begin
@@ -1118,7 +1054,7 @@ module nerv #(
 					3'b 000 /* JALR */: begin
 						next_wr = 1;
 						next_rd = npc;
-						npc = (rs1_value + imm_i_sext) & ~32'b 1;
+						npc = (rs1_value + uop.rs2) & ~32'b 1;
 					end
 					default: illinsn = 1;
 				endcase
@@ -1142,13 +1078,13 @@ module nerv #(
 					endcase
 				end else begin
 					next_wr = 1;
-					next_rd = decode_alt_pc;
+					next_rd = uop.alt_next_pc;
 				end
 
-				if ((decode_compeq_valid && compeq_result == decode_compeq_value) || (decode_complt_valid && complt_result == decode_complt_value))
-					npc = decode_alt_pc;
+				if ((uop.ctrl.compeq_valid && compeq_result == uop.ctrl.compeq_value) || (uop.ctrl.complt_valid && complt_result == uop.ctrl.complt_value))
+					npc = uop.alt_next_pc;
 				else
-					npc = decode_next_pc;
+					npc = uop.next_pc;
 
 				if ((npc & 32'b11) != 0) begin
 					illinsn = 1;
@@ -1266,7 +1202,7 @@ module nerv #(
 					10'b 0000101_110 /* MAX    */,
 					10'b 0000101_111 /* MAXU   */,
 					10'b 0000101_100 /* MIN    */,
-					10'b 0000101_101 /* MINU   */: begin next_wr = 1; next_rd = complt_result == decode_complt_value ? rs1_value : rs2_value; end
+					10'b 0000101_101 /* MINU   */: begin next_wr = 1; next_rd = complt_result == uop.ctrl.complt_value ? rs1_value : rs2_value; end
 					10'b 0110000_001 /* ROL    */: begin next_wr = 1; next_rd = rs1_value << rs2_value[4:0] | (rs1_value >> (32 - rs2_value[4:0])); end // TODO: go mad with power and implement a funnel shifter
 					10'b 0110000_101 /* ROR    */: begin next_wr = 1; next_rd = rs1_value >> rs2_value[4:0] | (rs1_value << (32 - rs2_value[4:0])); end
 					10'b 0000100_100 /* PACK   */: begin next_wr = 1; next_rd = {rs2_value[15:0], rs1_value[15:0]}; end

@@ -47,8 +47,8 @@ package RiscVOpcode32;
 
 		AUIPC      = 7'b 00_101_11,
 		LUI        = 7'b 01_101_11,
-		RESERVED_1 = 7'b 10_101_11,
-		RESERVED_2 = 7'b 11_101_11,
+		OP_V       = 7'b 10_101_11,
+		OP_VE      = 7'b 11_101_11,
 
 		OP_IMM_32  = 7'b 00_110_11,
 		OP_32      = 7'b 01_110_11,
@@ -280,6 +280,10 @@ package RiscV;
 
 	function bit opcode_is_op(Insn32 insn);
 		return insn.opcode == RiscVOpcode32::OP;
+	endfunction
+
+	function bit opcode_is_system(Insn32 insn);
+		return insn.opcode == RiscVOpcode32::SYSTEM;
 	endfunction
 
 	function bit opcode_is_auipc(Insn32 insn);

@@ -388,7 +388,8 @@ def check_insn(grp, insn, chanidx, csr_mode=False, illegal_csr=False):
                 : skip @skip@
                 :
                 : [engines]
-                : @engine@
+                : smtbmc boolector
+                : smtbmc yices
                 :
                 : [script]
         """, **hargs)
@@ -660,7 +661,8 @@ def check_cons(grp, check, chanidx=None, start=None, trig=None, depth=None, csr_
                 : skip @skip@
                 :
                 : [engines]
-                : @engine@
+                : smtbmc boolector
+                : smtbmc yices
                 :
                 : [script]
         """, **hargs)
