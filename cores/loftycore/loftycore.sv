@@ -21,7 +21,6 @@ package lc_uop;
 
 	typedef enum logic [4:0] {
 		Illegal,
-		UpperImmediate,
 		JumpRegister,
 		JumpConditional,
 		Load,
@@ -56,7 +55,7 @@ package lc_uop;
 	} Control;
 
 	typedef struct packed {
-		logic [31:0] rs1;
+		logic [4:0]  rs1;
 		logic [31:0] rs2;
 		logic [4:0]  rd;
 		logic [31:0] next_pc;
@@ -102,7 +101,7 @@ module lc_fe_decoder(
 	};
 
 	always_comb begin
-		uop.rs1 = /*(RiscV::opcode_is_lui(insn) || RiscV::opcode_is_auipc(insn)) ? '0 :*/ insn.rs1;
+		uop.rs1 = (RiscV::opcode_is_lui(insn) || RiscV::opcode_is_auipc(insn)) ? '0 : insn.rs1;
 		unique if (insn_has_imm_i)
 			uop.rs2 = rs2_is_zero ? '0 : imm_i;
 		else if (RiscV::opcode_is_store(insn))
@@ -153,6 +152,9 @@ module lc_fe_decoder(
 	assign uop.ctrl.rs1_bit_reverse  = is_shift_left || RiscV::is_brev8(insn) || RiscV::is_clz(insn);
 
 	assign uop.ctrl.rs2_is_imm = |{
+		// upper immediates,
+		RiscV::opcode_is_lui(insn),
+		RiscV::opcode_is_auipc(insn),
 		// immediate shifts
 		RiscV::is_slli(insn),
 		RiscV::is_srli(insn),
@@ -217,12 +219,6 @@ module lc_fe_decoder(
 			uop.ctrl.op = lc_uop::JumpConditional;
 		else if (RiscV::opcode_is_jalr(insn))
 			uop.ctrl.op = lc_uop::JumpRegister;
-		/*else if (RiscV::opcode_is_op_imm(insn)) begin
-
-		end else if (RiscV::opcode_is_op(insn)) begin
-
-		end*/ else if (RiscV::opcode_is_auipc(insn) || RiscV::opcode_is_lui(insn))
-			uop.ctrl.op = lc_uop::UpperImmediate;
 		else
 			uop.ctrl.op = lc_uop::Illegal;
 	end
@@ -651,8 +647,12 @@ module nerv #(
 	assign imem_addr = npc;
 	assign insn = imem_data;
 
+	// decode: miscellaneous
+	lc_uop::Uop uop;
+	lc_fe_decoder decoder(.*);
+
 	// rs1 and rs2 are source for the instruction
-	wire [31:0] rs1_value = (insn.rs1 == 0) ? 0 : regfile[insn.rs1];
+	wire [31:0] rs1_value = (uop.rs1 == 0) ? 0 : regfile[uop.rs1];
 	wire [31:0] rs2_value = (insn.rs2 == 0) ? 0 : regfile[insn.rs2];
 
 	// setup for I, S, B & J type instructions
@@ -685,10 +685,6 @@ module nerv #(
 	localparam MCAUSE_ECALL_M_MODE             = 32'h0000000b;
 
 	localparam IRQ_MASK = 32'hFFFF0888;
-
-	// decode: miscellaneous
-	lc_uop::Uop uop;
-	lc_fe_decoder decoder(.*);
 
 	// execute: shifter
 	wire [4:0]  shift_rs2      = uop.ctrl.rs2_is_imm ? uop.rs2 : rs2_value[4:0];
@@ -760,8 +756,8 @@ module nerv #(
 	wire imem_valid = !mem_rd_enable_q && !mem_wr_enable_q && !imem_fault;
 	wire [ 1:0] csr_mode = (running && imem_valid && irq_num == '0 && insn.opcode == RiscVOpcode32::SYSTEM) ? insn.funct3[1:0] : 2'b 00; // 00=None, 01=RW, 10=RS, 11=RC
 	wire [11:0] csr_addr = imm_i;
-	wire [31:0] csr_rsval = insn.funct3[2] ? 32'(insn.rs1) : rs1_value;
-	wire csr_ro = csr_mode != 0 && (csr_mode != 2'b01 && insn.rs1 == 0);
+	wire [31:0] csr_rsval = insn.funct3[2] ? 32'(uop.rs1) : rs1_value;
+	wire csr_ro = csr_mode != 0 && (csr_mode != 2'b01 && uop.rs1 == 0);
 
 	integer hpm_idx, hpm_increment, hpm_event;
 
@@ -804,17 +800,18 @@ module nerv #(
 	wire [31:0] csr_``NAME``_next  = csr_``ARRAY``_next[(INDEX)*32 +: 32];  \
 	assign csr_``ARRAY``_sel[INDEX] = csr_``NAME``_sel;
 
-	// dummy out missing select lines
-	assign csr_hpm_event_sel[2:0] = 0;
-	assign csr_hpm_counter_sel[1] = 0;
-	assign csr_hpm_counterh_sel[1] = 0;
-
 `NERV_CSRS
 `undef NERV_CSR_REG_MRW
 `undef NERV_CSR_VAL_MRW
 `undef NERV_CSR_VAL_MRO
 `undef NERV_CSR_ARR_DEF
 `undef NERV_CSR_ARR_MRW
+
+	// dummy out missing select lines
+	assign csr_hpm_event_sel[2:0] = 0;
+	assign csr_hpm_counter_sel[1] = 0;
+	assign csr_hpm_counterh_sel[1] = 0;
+
 `endif // NERV_CSR
 
 	wire [31:0] irq_en;
@@ -1046,7 +1043,7 @@ module nerv #(
 			// Load Upper Immediate, Add Upper Immediate to Program Counter
 			RiscVOpcode32::LUI, RiscVOpcode32::AUIPC: begin
 				next_wr = 1;
-				next_rd = uop.rs2;
+				next_rd = add_result;
 			end
 			// Jump And Link Register (indirect jump)
 			RiscVOpcode32::JALR: begin
@@ -1388,7 +1385,7 @@ module nerv #(
 			rvfi_intr <= next_rvfi_intr;
 			rvfi_mode <= 3;
 			rvfi_ixl <= 1;
-			rvfi_rs1_addr <= insn.rs1;
+			rvfi_rs1_addr <= uop.rs1;
 			rvfi_rs2_addr <= insn.rs2;
 			rvfi_rs1_rdata <= rs1_value;
 			rvfi_rs2_rdata <= rs2_value;
