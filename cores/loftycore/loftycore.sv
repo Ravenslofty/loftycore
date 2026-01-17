@@ -157,7 +157,7 @@ module lc_fe_decoder(
 		RiscV::is_bclr(insn)
 	};
 
-	assign uop.ctrl.bit_reverse_rd = is_shift_left;
+	assign uop.ctrl.rd_bit_reverse = is_shift_left;
 
 	assign uop.ctrl.carry_in = RiscV::is_sub(insn);
 
