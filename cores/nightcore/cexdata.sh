@@ -45,4 +45,3 @@ for x in {checks,testbug[0-9][0-9][0-9]}/*.sby; do
 		printf "%-30s %s\n" $x unknown
 	fi
 done | awk '{ print gensub(":", "", "g", $3), $0; }' | sort -n | cut -f2- -d' ' > cexdata/status.txt
-

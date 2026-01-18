@@ -45,7 +45,7 @@ module rvfi_wrapper (
 	(* keep *) wire [ 3:0] dmem_wstrb;
 	(* keep *) wire [31:0] dmem_wdata;
 
-	nerv uut (
+	nightcore uut (
 		.clock      (clock    ),
 		.reset      (reset    ),
 		.stall      (stall    ),

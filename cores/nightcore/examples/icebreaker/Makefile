@@ -40,7 +40,7 @@ design.bin: design.asc
 
 prog: design.bin
 	iceprog $<
-	
+
 show:
 	gtkwave testbench.vcd testbench.gtkw >> gtkwave.log 2>&1 &
 

@@ -17,7 +17,7 @@
  *
  */
 
-package lc_uop;
+package nc_uop;
 
 	typedef enum logic [4:0] {
 		Illegal,
@@ -66,11 +66,11 @@ package lc_uop;
 
 endpackage
 
-module lc_fe_decoder(
+module nc_fe_decoder(
 	input  RiscV::Insn32 insn,
 	input  logic [31:0]  pc,
 
-	output lc_uop::Uop   uop
+	output nc_uop::Uop   uop
 );
 	// I - short immediates and loads
 	wire [31:0] imm_i   = RiscV::immediate_i_sext(insn);
@@ -301,22 +301,22 @@ module lc_fe_decoder(
 	always_comb begin
 		uop.ctrl.is_frontend_decoded = 1;
 		unique if (is_jump_conditional)
-			uop.ctrl.op = lc_uop::JumpConditional;
+			uop.ctrl.op = nc_uop::JumpConditional;
 		else if (is_add_op)
-			uop.ctrl.op = lc_uop::Add;
+			uop.ctrl.op = nc_uop::Add;
 		else if (is_slt_op)
-			uop.ctrl.op = lc_uop::SetIfLessThan;
+			uop.ctrl.op = nc_uop::SetIfLessThan;
 		else if (is_xor_op)
-			uop.ctrl.op = lc_uop::Xor;
+			uop.ctrl.op = nc_uop::Xor;
 		else if (is_or_op)
-			uop.ctrl.op = lc_uop::Or;
+			uop.ctrl.op = nc_uop::Or;
 		else if (is_and_op)
-			uop.ctrl.op = lc_uop::And;
+			uop.ctrl.op = nc_uop::And;
 		else if (is_shift_op)
-			uop.ctrl.op = lc_uop::ShiftRight;
+			uop.ctrl.op = nc_uop::ShiftRight;
 		else begin
 			uop.ctrl.is_frontend_decoded = 0;
-			uop.ctrl.op = lc_uop::Illegal;
+			uop.ctrl.op = nc_uop::Illegal;
 		end
 	end
 endmodule
@@ -599,7 +599,7 @@ endmodule
 	`NERV_CUSTOM_CSRS
 `endif
 
-module nerv #(
+module nightcore #(
 	parameter [31:0] RESET_ADDR = 32'h 0000_0000,
 	parameter integer NUMREGS = 32
 ) (
@@ -745,8 +745,8 @@ module nerv #(
 	assign insn = imem_data;
 
 	// decode: miscellaneous
-	lc_uop::Uop uop;
-	lc_fe_decoder decoder(.*);
+	nc_uop::Uop uop;
+	nc_fe_decoder decoder(.*);
 
 	// rs1 and rs2 are source for the instruction
 	wire [31:0] rs1_value = (uop.rs1 == 0) ? 0 : regfile[uop.rs1];
@@ -1132,7 +1132,7 @@ module nerv #(
 	// act on opcodes
 	if (uop.ctrl.is_frontend_decoded) begin
 		case (uop.ctrl.op)
-			lc_uop::JumpConditional: begin
+			nc_uop::JumpConditional: begin
 				next_wr = uop.rd != '0;
 				next_rd = uop.alt_next_pc;
 
@@ -1149,12 +1149,12 @@ module nerv #(
 					npc = npc & ~32'b 11;
 				end
 			end
-			lc_uop::Add:           begin next_wr = 1; next_rd = add_result;         end
-			lc_uop::SetIfLessThan: begin next_wr = 1; next_rd = 32'(complt_result); end
-			lc_uop::Xor:           begin next_wr = 1; next_rd = xor_result;         end
-			lc_uop::Or:            begin next_wr = 1; next_rd = or_result;          end
-			lc_uop::And:           begin next_wr = 1; next_rd = and_result;         end
-			lc_uop::ShiftRight:    begin next_wr = 1; next_rd = uop.ctrl.rs2_is_single_bit ? 32'(shift_result[0]) : shift_result; end
+			nc_uop::Add:           begin next_wr = 1; next_rd = add_result;         end
+			nc_uop::SetIfLessThan: begin next_wr = 1; next_rd = 32'(complt_result); end
+			nc_uop::Xor:           begin next_wr = 1; next_rd = xor_result;         end
+			nc_uop::Or:            begin next_wr = 1; next_rd = or_result;          end
+			nc_uop::And:           begin next_wr = 1; next_rd = and_result;         end
+			nc_uop::ShiftRight:    begin next_wr = 1; next_rd = uop.ctrl.rs2_is_single_bit ? 32'(shift_result[0]) : shift_result; end
 			default: illinsn = 1;
 		endcase
 	end else begin

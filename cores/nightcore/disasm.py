@@ -52,4 +52,3 @@ with open("disasm.s", "w") as f:
 
 system("riscv64-elf-as -march=rv32i -o disasm.o disasm.s")
 system("riscv64-elf-objdump -d -M numeric,no-aliases disasm.o")
-
