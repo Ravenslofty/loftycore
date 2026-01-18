@@ -301,6 +301,11 @@ module nc_fe_decoder(
 		RiscV::is_brev8(insn)
 	};
 
+	wire is_ctz_op = |{
+		RiscV::is_clz(insn),
+		RiscV::is_ctz(insn)
+	};
+
 	wire is_min_op = |{
 		RiscV::is_min(insn),
 		RiscV::is_max(insn),
@@ -324,6 +329,8 @@ module nc_fe_decoder(
 			uop.ctrl.op = nc_uop::And;
 		else if (is_shift_op)
 			uop.ctrl.op = nc_uop::ShiftRight;
+		else if (is_ctz_op)
+			uop.ctrl.op = nc_uop::CountTrailingZeroes;
 		else if (is_min_op)
 			uop.ctrl.op = nc_uop::Minimum;
 		else begin
@@ -803,6 +810,16 @@ module nightcore #(
 		assign shift_result[i] = uop.ctrl.rd_bit_reverse ? shift_output[31-i] : shift_output[i];
 	end
 
+	// execute: count bits
+	logic [31:0] ctz_result;
+	logic [31:0] cpop_result;
+	always_comb begin
+		ctz_result  = '0;
+		cpop_result = '0;
+		for (int i=32; i>0; i=i-1) ctz_result = shift_input[i-1] ? 0 : ctz_result + 1;
+		for (int i=0; i<32; i=i+1) cpop_result = cpop_result + 32'(rs1_value[i]);
+	end
+
 	// execute: less than comparator
 	wire [31:0] complt_rs2 = uop.ctrl.rs2_is_imm ? uop.imm : rs2_value;
 	wire complt_signed     = $signed(rs1_value) < $signed(complt_rs2);
@@ -1143,6 +1160,7 @@ module nightcore #(
 
 	// act on opcodes
 	if (uop.ctrl.is_frontend_decoded) begin
+		next_wr = 1;
 		case (uop.ctrl.op)
 			nc_uop::JumpConditional: begin
 				next_wr = uop.rd != '0;
@@ -1151,7 +1169,7 @@ module nightcore #(
 				if ((uop.ctrl.compeq_valid && compeq_result == uop.ctrl.compeq_value) ||
 					(uop.ctrl.complt_valid && complt_result == uop.ctrl.complt_value))
 					npc = uop.alt_next_pc;
-				else if (uop.ctrl.rd_bit_reverse)
+				else if (uop.ctrl.rd_bit_reverse) // JALR
 					npc = add_result & ~32'b1;
 				else
 					npc = uop.next_pc;
@@ -1161,13 +1179,14 @@ module nightcore #(
 					npc = npc & ~32'b 11;
 				end
 			end
-			nc_uop::Add:           begin next_wr = 1; next_rd = add_result;         end
-			nc_uop::SetIfLessThan: begin next_wr = 1; next_rd = 32'(complt_result); end
-			nc_uop::Xor:           begin next_wr = 1; next_rd = xor_result;         end
-			nc_uop::Or:            begin next_wr = 1; next_rd = or_result;          end
-			nc_uop::And:           begin next_wr = 1; next_rd = and_result;         end
-			nc_uop::ShiftRight:    begin next_wr = 1; next_rd = uop.ctrl.rs2_is_single_bit ? 32'(shift_result[0]) : shift_result; end
-			nc_uop::Minimum:       begin next_wr = 1; next_rd = complt_result == uop.ctrl.complt_value ? rs1_value : rs2_value;   end
+			nc_uop::Add:                 begin next_rd = add_result;         end
+			nc_uop::SetIfLessThan:       begin next_rd = 32'(complt_result); end
+			nc_uop::Xor:                 begin next_rd = xor_result;         end
+			nc_uop::Or:                  begin next_rd = or_result;          end
+			nc_uop::And:                 begin next_rd = and_result;         end
+			nc_uop::ShiftRight:          begin next_rd = uop.ctrl.rs2_is_single_bit ? 32'(shift_result[0]) : shift_result; end
+			nc_uop::CountTrailingZeroes: begin next_rd = ctz_result;   end
+			nc_uop::Minimum:             begin next_rd = complt_result == uop.ctrl.complt_value ? rs1_value : rs2_value;   end
 			default: illinsn = 1;
 		endcase
 	end else begin
