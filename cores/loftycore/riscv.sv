@@ -442,8 +442,24 @@ package RiscV;
 		return opcode_is_op(insn) && insn.funct7 == 7'b0000000 && insn.funct3 == RiscVOpcode32Op::SLT;
 	endfunction
 
+	function bit is_sltu(Insn32 insn);
+		return opcode_is_op(insn) && insn.funct7 == 7'b0000000 && insn.funct3 == RiscVOpcode32Op::SLTU;
+	endfunction
+
 	function bit is_srl(Insn32 insn);
 		return opcode_is_op(insn) && insn.funct7 == 7'b0000000 && insn.funct3 == RiscVOpcode32Op::SRL;
+	endfunction
+
+	function bit is_xor(Insn32 insn);
+		return opcode_is_op(insn) && insn.funct7 == 7'b0000000 && insn.funct3 == RiscVOpcode32Op::XOR;
+	endfunction
+
+	function bit is_or(Insn32 insn);
+		return opcode_is_op(insn) && insn.funct7 == 7'b0000000 && insn.funct3 == RiscVOpcode32Op::OR;
+	endfunction
+
+	function bit is_and(Insn32 insn);
+		return opcode_is_op(insn) && insn.funct7 == 7'b0000000 && insn.funct3 == RiscVOpcode32Op::AND;
 	endfunction
 
 	function bit is_min(Insn32 insn);
@@ -488,6 +504,14 @@ package RiscV;
 
 	function bit is_bext(Insn32 insn);
 		return opcode_is_op(insn) && insn.funct7 == 7'b0100100 && insn.funct3 == RiscVOpcode32Op::BEXT;
+	endfunction
+
+	function bit is_rol(Insn32 insn);
+		return opcode_is_op(insn) && insn.funct7 == 7'b0110000 && insn.funct3 == RiscVOpcode32Op::ROL;
+	endfunction
+
+	function bit is_ror(Insn32 insn);
+		return opcode_is_op(insn) && insn.funct7 == 7'b0110000 && insn.funct3 == RiscVOpcode32Op::ROR;
 	endfunction
 
 	function bit is_binv(Insn32 insn);

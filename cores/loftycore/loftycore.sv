@@ -33,7 +33,6 @@ package lc_uop;
 		CountTrailingZeroes,
 		CountPopulation,
 		SignExtend,
-		RotateRight,
 		OrCombine
 	} Opcode;
 
@@ -47,8 +46,8 @@ package lc_uop;
 		logic        rs2_is_imm;
 		logic        rs2_is_single_bit;
 		logic        rs2_invert;
-		logic        rd_bit_reverse; // used to distinguish register [JALR]/immediate [JAL/B__] JumpConditional
-		logic        carry_in;
+		logic        rd_bit_reverse; // also used to distinguish register [JALR]/immediate [JAL/B__] JumpConditional
+		logic        carry_in;       // also used to distinguish rotate vs shift
 		logic        is_signed;
 		logic        is_frontend_decoded;
 		Opcode       op;
@@ -149,7 +148,7 @@ module lc_fe_decoder(
 		RiscV::is_beq(insn)
 	};
 
-	wire is_shift_left = RiscV::is_sll(insn) || RiscV::is_slli(insn);
+	wire is_shift_left = RiscV::is_sll(insn) || RiscV::is_slli(insn) || RiscV::is_rol(insn);
 	assign uop.ctrl.rs1_byte_reverse = is_shift_left || RiscV::is_rev8(insn)  || RiscV::is_clz(insn);
 	assign uop.ctrl.rs1_bit_reverse  = is_shift_left || RiscV::is_brev8(insn) || RiscV::is_clz(insn);
 
@@ -188,13 +187,17 @@ module lc_fe_decoder(
 		RiscV::opcode_is_jal(insn),
 		RiscV::opcode_is_jalr(insn)
 	};
+
+	// we repurpose the otherwise well-used rs2_is_single_bit to distinguish BEXT vs shift/rotate
 	assign uop.ctrl.rs2_is_single_bit = |{
-		RiscV::is_bclri(insn),
-		RiscV::is_binvi(insn),
-		RiscV::is_bseti(insn),
 		RiscV::is_bclr(insn),
+		RiscV::is_bclri(insn),
 		RiscV::is_binv(insn),
-		RiscV::is_bset(insn)
+		RiscV::is_binvi(insn),
+		RiscV::is_bset(insn),
+		RiscV::is_bseti(insn),
+		RiscV::is_bext(insn),
+		RiscV::is_bexti(insn)
 	};
 	assign uop.ctrl.rs2_invert = |{
 		RiscV::is_sub(insn),
@@ -208,7 +211,13 @@ module lc_fe_decoder(
 	// we repurpose the otherwise-unused rd_bit_reverse to distinguish JALR vs JAL/BRANCH.
 	assign uop.ctrl.rd_bit_reverse = is_shift_left || RiscV::is_jalr(insn);
 
-	assign uop.ctrl.carry_in = RiscV::is_sub(insn);
+	// we repurpose the otherwise-unused carry_in to distinguish shift vs rotate.
+	assign uop.ctrl.carry_in = |{
+		RiscV::is_sub(insn),
+		RiscV::is_rol(insn),
+		RiscV::is_ror(insn),
+		RiscV::is_rori(insn)
+	};
 
 	assign uop.ctrl.is_signed = |{
 		// signed shifts
@@ -242,6 +251,37 @@ module lc_fe_decoder(
 		RiscV::opcode_is_auipc(insn)
 	};
 
+	wire is_slt_op = |{
+		RiscV::is_slt(insn),
+		RiscV::is_slti(insn),
+		RiscV::is_sltu(insn),
+		RiscV::is_sltiu(insn)
+	};
+
+	wire is_xor_op = |{
+		RiscV::is_xor(insn),
+		RiscV::is_xori(insn),
+		RiscV::is_xnor(insn),
+		RiscV::is_binv(insn),
+		RiscV::is_binvi(insn)
+	};
+
+	wire is_or_op = |{
+		RiscV::is_or(insn),
+		RiscV::is_ori(insn),
+		RiscV::is_orn(insn),
+		RiscV::is_bset(insn),
+		RiscV::is_bseti(insn)
+	};
+
+	wire is_and_op = |{
+		RiscV::is_and(insn),
+		RiscV::is_andi(insn),
+		RiscV::is_andn(insn),
+		RiscV::is_bclr(insn),
+		RiscV::is_bclri(insn)
+	};
+
 	wire is_shift_op = |{
 		RiscV::is_sll(insn),
 		RiscV::is_slli(insn),
@@ -249,6 +289,11 @@ module lc_fe_decoder(
 		RiscV::is_srli(insn),
 		RiscV::is_sra(insn),
 		RiscV::is_srai(insn),
+		RiscV::is_rol(insn),
+		RiscV::is_ror(insn),
+		RiscV::is_rori(insn),
+		RiscV::is_bext(insn),
+		RiscV::is_bexti(insn),
 		RiscV::is_rev8(insn),
 		RiscV::is_brev8(insn)
 	};
@@ -259,6 +304,14 @@ module lc_fe_decoder(
 			uop.ctrl.op = lc_uop::JumpConditional;
 		else if (is_add_op)
 			uop.ctrl.op = lc_uop::Add;
+		else if (is_slt_op)
+			uop.ctrl.op = lc_uop::SetIfLessThan;
+		else if (is_xor_op)
+			uop.ctrl.op = lc_uop::Xor;
+		else if (is_or_op)
+			uop.ctrl.op = lc_uop::Or;
+		else if (is_and_op)
+			uop.ctrl.op = lc_uop::And;
 		else if (is_shift_op)
 			uop.ctrl.op = lc_uop::ShiftRight;
 		else begin
@@ -726,7 +779,8 @@ module nerv #(
 	wire [31:0] shift_input;
 	wire [31:0] shift_signed   = $signed(shift_input) >>> shift_rs2;
 	wire [31:0] shift_unsigned = shift_input >> shift_rs2;
-	wire [31:0] shift_output   = uop.ctrl.is_signed ? shift_signed : shift_unsigned;
+	wire [31:0] shift_rotate   = shift_input << (32 - shift_rs2);
+	wire [31:0] shift_output   = (uop.ctrl.is_signed ? shift_signed : shift_unsigned) | (uop.ctrl.carry_in ? shift_rotate : 0);
 	wire [31:0] shift_result;
 
 	for (genvar i=0; i<32; i=i+1) begin: gen_bitrev
@@ -752,6 +806,9 @@ module nerv #(
 	wire [31:0] alu_rs2    = uop.ctrl.rs2_invert ? ~alu_rs2_s2 : alu_rs2_s2;
 
 	wire [31:0] add_result = rs1_value + alu_rs2 + 32'(uop.ctrl.carry_in);
+	wire [31:0] xor_result = rs1_value ^ alu_rs2;
+	wire [31:0] or_result  = rs1_value | alu_rs2;
+	wire [31:0] and_result = rs1_value & alu_rs2;
 
 	// next write, next destination (rd) value & register
 	reg next_wr;
@@ -1092,8 +1149,12 @@ module nerv #(
 					npc = npc & ~32'b 11;
 				end
 			end
-			lc_uop::Add:             begin next_wr = 1; next_rd = add_result;   end
-			lc_uop::ShiftRight:      begin next_wr = 1; next_rd = shift_result; end
+			lc_uop::Add:           begin next_wr = 1; next_rd = add_result;         end
+			lc_uop::SetIfLessThan: begin next_wr = 1; next_rd = 32'(complt_result); end
+			lc_uop::Xor:           begin next_wr = 1; next_rd = xor_result;         end
+			lc_uop::Or:            begin next_wr = 1; next_rd = or_result;          end
+			lc_uop::And:           begin next_wr = 1; next_rd = and_result;         end
+			lc_uop::ShiftRight:    begin next_wr = 1; next_rd = uop.ctrl.rs2_is_single_bit ? 32'(shift_result[0]) : shift_result; end
 			default: illinsn = 1;
 		endcase
 	end else begin
@@ -1142,14 +1203,6 @@ module nerv #(
 				// OR Immediate, And Immediate, Shift Left Logical Immediate, Shift Right Logical Immediate, Shift Right Arithmetic Immediate
 				RiscVOpcode32::OP_IMM: begin
 					casez ({insn.funct7, insn.funct3})
-						10'b zzzzzzz_010 /* SLTI  */,
-						10'b zzzzzzz_011 /* SLTIU */: begin next_wr = 1; next_rd = 32'(complt_result); end
-						10'b 0110100_001 /* BINVI (Zbs) */,
-						10'b zzzzzzz_100 /* XORI  */: begin next_wr = 1; next_rd = rs1_value ^ alu_rs2; end
-						10'b 0010100_001 /* BSETI (Zbs) */,
-						10'b zzzzzzz_110 /* ORI   */: begin next_wr = 1; next_rd = rs1_value | alu_rs2; end
-						10'b 0100100_001 /* BCLRI (Zbs) */,
-						10'b zzzzzzz_111 /* ANDI  */: begin next_wr = 1; next_rd = rs1_value & alu_rs2; end
 						// Zbb: Basic bit-manipulation
 						10'b 0110000_001: begin
 							casez (insn[24:20])
@@ -1161,12 +1214,9 @@ module nerv #(
 								default: illinsn = 1;
 							endcase
 						end
-						10'b 0110000_101 /* RORI  */: begin next_wr = 1; next_rd = rs1_value >> insn[24:20] | (rs1_value << (32 - insn[24:20])); end
 						10'b 0010100_101 /* ORC.B */: begin next_wr = insn[24:20] == 5'b 00111; illinsn = !next_wr; next_rd = 0; for (int i=0; i<4; i=i+1) next_rd[i*8 +: 8] = {8{|rs1_value[i*8 +: 8]}}; end
 						10'b 0000100_001 /* ZIP   */: begin next_wr = insn[24:20] == 5'b 01111; illinsn = !next_wr; next_rd = 0; for (int i=0; i<16; i=i+1) begin next_rd[2*i] = rs1_value[i]; next_rd[2*i+1] = rs1_value[i+16]; end end
 						10'b 0000100_101 /* UNZIP */: begin next_wr = insn[24:20] == 5'b 01111; illinsn = !next_wr; next_rd = 0; for (int i=0; i<16; i=i+1) begin next_rd[i] = rs1_value[2*i]; next_rd[i+16] = rs1_value[2*i+1]; end end
-						// Zbs: Single-bit instructions
-						10'b 0100100_101 /* BEXTI */: begin next_wr = 1; next_rd = 32'(shift_result[0]); end
 						default: illinsn = 1;
 					endcase
 				end
@@ -1174,17 +1224,6 @@ module nerv #(
 				// ALU instructions: Add, Subtract, Shift Left Logical, Set Left Than, Set Less Than Unsigned, XOR, Shift Right Logical,
 				// Shift Right Arithmetic, OR, AND
 					case ({insn.funct7, insn.funct3})
-						10'b 0000000_010 /* SLT  */,
-						10'b 0000000_011 /* SLTU */: begin next_wr = 1; next_rd = 32'(complt_result); end
-						10'b 0100000_100 /* XNOR (Zbb) */,
-						10'b 0110100_001 /* BINV (Zbs) */,
-						10'b 0000000_100 /* XOR  */: begin next_wr = 1; next_rd = rs1_value ^ alu_rs2; end
-						10'b 0100000_110 /* ORN  (Zbb) */,
-						10'b 0010100_001 /* BSET (Zbs) */,
-						10'b 0000000_110 /* OR   */: begin next_wr = 1; next_rd = rs1_value | alu_rs2; end
-						10'b 0100000_111 /* ANDN (Zbb) */,
-						10'b 0100100_001 /* BCLR (Zbs) */,
-						10'b 0000000_111 /* AND  */: begin next_wr = 1; next_rd = rs1_value & alu_rs2; end
 						// Zba: Address generation
 						10'b 0010000_010 /* SH1ADD */: begin next_wr = 1; next_rd = rs2_value + {rs1_value[30:0], 1'b 0}; end
 						10'b 0010000_100 /* SH2ADD */: begin next_wr = 1; next_rd = rs2_value + {rs1_value[29:0], 2'b 0}; end
@@ -1194,16 +1233,12 @@ module nerv #(
 						10'b 0000101_111 /* MAXU   */,
 						10'b 0000101_100 /* MIN    */,
 						10'b 0000101_101 /* MINU   */: begin next_wr = 1; next_rd = complt_result == uop.ctrl.complt_value ? rs1_value : rs2_value; end
-						10'b 0110000_001 /* ROL    */: begin next_wr = 1; next_rd = rs1_value << rs2_value[4:0] | (rs1_value >> (32 - rs2_value[4:0])); end // TODO: go mad with power and implement a funnel shifter
-						10'b 0110000_101 /* ROR    */: begin next_wr = 1; next_rd = rs1_value >> rs2_value[4:0] | (rs1_value << (32 - rs2_value[4:0])); end
 						10'b 0000100_100 /* PACK   */: begin next_wr = 1; next_rd = {rs2_value[15:0], rs1_value[15:0]}; end
 						10'b 0000100_111 /* PACKH  */: begin next_wr = 1; next_rd = {16'b0, rs2_value[7:0], rs1_value[7:0]}; end
 						// Zbc: Carry-less multiplication
 						10'b 0000101_001 /* CLMUL  */: begin next_wr = 1; next_rd = 0; for (int i=0; i<32; i=i+1) next_rd = (rs2_value[i]) ? next_rd ^ (rs1_value << i) : next_rd; end
 						10'b 0000101_011 /* CLMULH */: begin next_wr = 1; next_rd = 0; for (int i=1; i<32; i=i+1) next_rd = (((rs2_value >> i) & 32'b1) != 0) ? next_rd ^ (rs1_value >> (32 - i)) : next_rd; end
 						10'b 0000101_010 /* CLMULR */: begin next_wr = 1; next_rd = 0; for (int i=0; i<32; i=i+1) next_rd = (rs2_value[i]) ? next_rd ^ (rs1_value >> (32 - i - 1)) : next_rd; end
-						// Zbs: Single-bit instructions
-						10'b 0100100_101 /* BEXT   */: begin next_wr = 1; next_rd = 32'(shift_result[0]); end
 						// Zbkx: Crossbar permutations
 						10'b 0010100_010 /* XPERM4 */: begin next_wr = 1; next_rd = 0; for (int i=0; i<8; i=i+1) next_rd[i*4+:4] = 4'(rs1_value >> (rs2_value[i*4+:4])); end
 						10'b 0010100_100 /* XPERM8 */: begin next_wr = 1; next_rd = 0; for (int i=0; i<4; i=i+1) next_rd[i*8+:8] = 8'(rs1_value >> (rs2_value[i*8+:8])); end
