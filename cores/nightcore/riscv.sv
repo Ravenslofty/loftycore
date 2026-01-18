@@ -474,6 +474,10 @@ package RiscV;
 		return opcode_is_op(insn) && insn.funct7 == 7'b0000101 && insn.funct3 == RiscVOpcode32Op::MAX;
 	endfunction
 
+	function bit is_maxu(Insn32 insn);
+		return opcode_is_op(insn) && insn.funct7 == 7'b0000101 && insn.funct3 == RiscVOpcode32Op::MAXU;
+	endfunction
+
 	function bit is_bset(Insn32 insn);
 		return opcode_is_op(insn) && insn.funct7 == 7'b0010100 && insn.funct3 == RiscVOpcode32Op::BSET;
 	endfunction

@@ -33,7 +33,10 @@ package nc_uop;
 		CountTrailingZeroes,
 		CountPopulation,
 		SignExtend,
-		OrCombine
+		OrCombine,
+		Zip,
+		Unzip,
+		Minimum
 	} Opcode;
 
 	typedef struct packed {
@@ -298,6 +301,13 @@ module nc_fe_decoder(
 		RiscV::is_brev8(insn)
 	};
 
+	wire is_min_op = |{
+		RiscV::is_min(insn),
+		RiscV::is_max(insn),
+		RiscV::is_minu(insn),
+		RiscV::is_maxu(insn)
+	};
+
 	always_comb begin
 		uop.ctrl.is_frontend_decoded = 1;
 		unique if (is_jump_conditional)
@@ -314,6 +324,8 @@ module nc_fe_decoder(
 			uop.ctrl.op = nc_uop::And;
 		else if (is_shift_op)
 			uop.ctrl.op = nc_uop::ShiftRight;
+		else if (is_min_op)
+			uop.ctrl.op = nc_uop::Minimum;
 		else begin
 			uop.ctrl.is_frontend_decoded = 0;
 			uop.ctrl.op = nc_uop::Illegal;
@@ -1155,6 +1167,7 @@ module nightcore #(
 			nc_uop::Or:            begin next_wr = 1; next_rd = or_result;          end
 			nc_uop::And:           begin next_wr = 1; next_rd = and_result;         end
 			nc_uop::ShiftRight:    begin next_wr = 1; next_rd = uop.ctrl.rs2_is_single_bit ? 32'(shift_result[0]) : shift_result; end
+			nc_uop::Minimum:       begin next_wr = 1; next_rd = complt_result == uop.ctrl.complt_value ? rs1_value : rs2_value;   end
 			default: illinsn = 1;
 		endcase
 	end else begin
@@ -1229,10 +1242,6 @@ module nightcore #(
 						10'b 0010000_100 /* SH2ADD */: begin next_wr = 1; next_rd = rs2_value + {rs1_value[29:0], 2'b 0}; end
 						10'b 0010000_110 /* SH3ADD */: begin next_wr = 1; next_rd = rs2_value + {rs1_value[28:0], 3'b 0}; end
 						// Zbb: Basic bit-manipulation
-						10'b 0000101_110 /* MAX    */,
-						10'b 0000101_111 /* MAXU   */,
-						10'b 0000101_100 /* MIN    */,
-						10'b 0000101_101 /* MINU   */: begin next_wr = 1; next_rd = complt_result == uop.ctrl.complt_value ? rs1_value : rs2_value; end
 						10'b 0000100_100 /* PACK   */: begin next_wr = 1; next_rd = {rs2_value[15:0], rs1_value[15:0]}; end
 						10'b 0000100_111 /* PACKH  */: begin next_wr = 1; next_rd = {16'b0, rs2_value[7:0], rs1_value[7:0]}; end
 						// Zbc: Carry-less multiplication
