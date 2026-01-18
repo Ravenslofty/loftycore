@@ -21,7 +21,6 @@ package lc_uop;
 
 	typedef enum logic [4:0] {
 		Illegal,
-		JumpRegister,
 		JumpConditional,
 		Load,
 		Store,
@@ -48,9 +47,10 @@ package lc_uop;
 		logic        rs2_is_imm;
 		logic        rs2_is_single_bit;
 		logic        rs2_invert;
-		logic        rd_bit_reverse;
+		logic        rd_bit_reverse; // used to distinguish register [JALR]/immediate [JAL/B__] JumpConditional
 		logic        carry_in;
 		logic        is_signed;
+		logic        is_frontend_decoded;
 		Opcode       op;
 	} Control;
 
@@ -104,7 +104,7 @@ module lc_fe_decoder(
 	always_comb begin
 		uop.rs1 = (RiscV::opcode_is_lui(insn) || RiscV::opcode_is_auipc(insn)) ? '0 : insn.rs1;
 		uop.rs2 = insn.rs2;
-		uop.rd  = insn.rd;
+		uop.rd  = RiscV::opcode_is_branch(insn) ? '0 : insn.rd;
 		unique if (insn_has_imm_i)
 			uop.imm = imm_is_zero ? '0 : imm_i;
 		else if (RiscV::opcode_is_store(insn))
@@ -205,7 +205,8 @@ module lc_fe_decoder(
 		RiscV::is_bclr(insn)
 	};
 
-	assign uop.ctrl.rd_bit_reverse = is_shift_left;
+	// we repurpose the otherwise-unused rd_bit_reverse to distinguish JALR vs JAL/BRANCH.
+	assign uop.ctrl.rd_bit_reverse = is_shift_left || RiscV::is_jalr(insn);
 
 	assign uop.ctrl.carry_in = RiscV::is_sub(insn);
 
@@ -222,17 +223,48 @@ module lc_fe_decoder(
 		RiscV::is_slti(insn)
 	};
 
+	wire is_jump_conditional = |{
+		RiscV::is_beq(insn),
+		RiscV::is_bne(insn),
+		RiscV::is_blt(insn),
+		RiscV::is_bge(insn),
+		RiscV::is_bltu(insn),
+		RiscV::is_bgeu(insn),
+		RiscV::opcode_is_jal(insn),
+		RiscV::is_jalr(insn)
+	};
+
+	wire is_add_op = |{
+		RiscV::is_add(insn),
+		RiscV::is_addi(insn),
+		RiscV::is_sub(insn),
+		RiscV::opcode_is_lui(insn),
+		RiscV::opcode_is_auipc(insn)
+	};
+
+	wire is_shift_op = |{
+		RiscV::is_sll(insn),
+		RiscV::is_slli(insn),
+		RiscV::is_srl(insn),
+		RiscV::is_srli(insn),
+		RiscV::is_sra(insn),
+		RiscV::is_srai(insn),
+		RiscV::is_rev8(insn),
+		RiscV::is_brev8(insn)
+	};
+
 	always_comb begin
-		unique if (RiscV::opcode_is_load(insn))
-			uop.ctrl.op = lc_uop::Load;
-		else if (RiscV::opcode_is_store(insn))
-			uop.ctrl.op = lc_uop::Store;
-		else if (RiscV::opcode_is_branch(insn) || RiscV::opcode_is_jal(insn))
+		uop.ctrl.is_frontend_decoded = 1;
+		unique if (is_jump_conditional)
 			uop.ctrl.op = lc_uop::JumpConditional;
-		else if (RiscV::opcode_is_jalr(insn))
-			uop.ctrl.op = lc_uop::JumpRegister;
-		else
+		else if (is_add_op)
+			uop.ctrl.op = lc_uop::Add;
+		else if (is_shift_op)
+			uop.ctrl.op = lc_uop::ShiftRight;
+		else begin
+			uop.ctrl.is_frontend_decoded = 0;
 			uop.ctrl.op = lc_uop::Illegal;
+		end
 	end
 endmodule
 
@@ -670,16 +702,6 @@ module nerv #(
 	// setup for I, S, B & J type instructions
 	// I - short immediates and loads
 	wire [11:0] imm_i      = RiscV::immediate_i(insn);
-	wire [31:0] imm_i_sext = RiscV::immediate_i_sext(insn);
-
-	// S - stores
-	wire [31:0] imm_s_sext = RiscV::immediate_s(insn);
-
-	// B - conditionals
-	wire [31:0] imm_b_sext = RiscV::immediate_b(insn);
-
-	// J - unconditional jumps
-	wire [31:0] imm_j_sext = RiscV::immediate_j(insn);
 
 
 	localparam MCAUSE_MACHINE_SOFTWARE_INTERRUPT = 32'h80000003;
@@ -869,7 +891,7 @@ module nerv #(
 `ifdef NERV_FAULT
 		cycle_dmem_fault = 0;
 `endif
-		wr_rd = insn.rd;
+		wr_rd = uop.rd;
 
 		illinsn = 0;
 
@@ -1050,48 +1072,18 @@ module nerv #(
 
 `endif // NERV_CSR
 
-		// act on opcodes
-		case (insn.opcode)
-			// Load Upper Immediate, Add Upper Immediate to Program Counter
-			RiscVOpcode32::LUI, RiscVOpcode32::AUIPC: begin
-				next_wr = 1;
-				next_rd = add_result;
-			end
-			// Jump And Link Register (indirect jump)
-			RiscVOpcode32::JALR: begin
-				case (insn.funct3)
-					3'b 000 /* JALR */: begin
-						next_wr = 1;
-						next_rd = npc;
-						npc = (rs1_value + uop.imm) & ~32'b 1;
-					end
-					default: illinsn = 1;
-				endcase
-				if ((npc & 32'b11) != 0) begin
-					illinsn = 1;
-					npc = npc & ~32'b 11;
-				end
-			end
-			// branch instructions: Branch If Equal, Branch Not Equal, Branch Less Than, Branch Greater Than, Branch Less Than Unsigned, Branch Greater Than Unsigned
-			// Jump And Link (unconditional jump)
-			RiscVOpcode32::BRANCH, RiscVOpcode32::JAL: begin
-				if (insn.opcode == RiscVOpcode32::BRANCH) begin
-					case (insn.funct3)
-						3'b 000 /* BEQ  */,
-						3'b 001 /* BNE  */,
-						3'b 100 /* BLT  */,
-						3'b 101 /* BGE  */,
-						3'b 110 /* BLTU */,
-						3'b 111 /* BGEU */: ;
-						default: illinsn = 1;
-					endcase
-				end else begin
-					next_wr = 1;
-					next_rd = uop.alt_next_pc;
-				end
+	// act on opcodes
+	if (uop.ctrl.is_frontend_decoded) begin
+		case (uop.ctrl.op)
+			lc_uop::JumpConditional: begin
+				next_wr = uop.rd != '0;
+				next_rd = uop.alt_next_pc;
 
-				if ((uop.ctrl.compeq_valid && compeq_result == uop.ctrl.compeq_value) || (uop.ctrl.complt_valid && complt_result == uop.ctrl.complt_value))
+				if ((uop.ctrl.compeq_valid && compeq_result == uop.ctrl.compeq_value) ||
+					(uop.ctrl.complt_valid && complt_result == uop.ctrl.complt_value))
 					npc = uop.alt_next_pc;
+				else if (uop.ctrl.rd_bit_reverse)
+					npc = add_result & ~32'b1;
 				else
 					npc = uop.next_pc;
 
@@ -1100,180 +1092,171 @@ module nerv #(
 					npc = npc & ~32'b 11;
 				end
 			end
-			// load from memory into rd: Load Byte, Load Halfword, Load Word, Load Byte Unsigned, Load Halfword Unsigned
-			RiscVOpcode32::LOAD: begin
-				mem_rd_addr = rs1_value + imm_i_sext;
-				casez ({insn.funct3, mem_rd_addr[1:0]})
-					5'b 000_zz /* LB  */,
-					5'b 001_z0 /* LH  */,
-					5'b 010_00 /* LW  */,
-					5'b 100_zz /* LBU */,
-					5'b 101_z0 /* LHU */: begin
-						mem_rd_enable = 1;
-						mem_rd_reg = insn.rd;
-						mem_rd_func = {mem_rd_addr[1:0], insn.funct3};
-						mem_rd_addr = {mem_rd_addr[31:2], 2'b00};
-					end
-					default: illinsn = 1;
-				endcase
-			end
-			// store to memory instructions: Store Byte, Store Halfword, Store Word
-			RiscVOpcode32::STORE: begin
-				mem_wr_addr = rs1_value + imm_s_sext;
-				casez ({insn.funct3, mem_wr_addr[1:0]})
-					5'b 000_zz /* SB */,
-					5'b 001_z0 /* SH */,
-					5'b 010_00 /* SW */: begin
-						mem_wr_enable = 1;
-						mem_wr_data = rs2_value;
-						mem_wr_strb = 4'b 1111;
-						case (insn.funct3)
-							3'b 000 /* SB  */: begin mem_wr_strb = 4'b 0001; end
-							3'b 001 /* SH  */: begin mem_wr_strb = 4'b 0011; end
-							3'b 010 /* SW  */: begin mem_wr_strb = 4'b 1111; end
-							default: illinsn = 1;
-						endcase
-						mem_wr_data = mem_wr_data << (8*mem_wr_addr[1:0]);
-						mem_wr_strb = mem_wr_strb << mem_wr_addr[1:0];
-						mem_wr_addr = {mem_wr_addr[31:2], 2'b 00};
-					end
-					default: illinsn = 1;
-				endcase
-			end
-			// immediate ALU instructions: Add Immediate, Set Less Than Immediate, Set Less Than Immediate Unsigned, XOR Immediate,
-			// OR Immediate, And Immediate, Shift Left Logical Immediate, Shift Right Logical Immediate, Shift Right Arithmetic Immediate
-			RiscVOpcode32::OP_IMM: begin
-				casez ({insn.funct7, insn.funct3})
-					10'b zzzzzzz_000 /* ADDI  */: begin next_wr = 1; next_rd = add_result; end
-					10'b zzzzzzz_010 /* SLTI  */,
-					10'b zzzzzzz_011 /* SLTIU */: begin next_wr = 1; next_rd = 32'(complt_result); end
-					10'b 0110100_001 /* BINVI (Zbs) */,
-					10'b zzzzzzz_100 /* XORI  */: begin next_wr = 1; next_rd = rs1_value ^ alu_rs2; end
-					10'b 0010100_001 /* BSETI (Zbs) */,
-					10'b zzzzzzz_110 /* ORI   */: begin next_wr = 1; next_rd = rs1_value | alu_rs2; end
-					10'b 0100100_001 /* BCLRI (Zbs) */,
-					10'b zzzzzzz_111 /* ANDI  */: begin next_wr = 1; next_rd = rs1_value & alu_rs2; end
-					10'b 0000000_001 /* SLLI  */,
-					10'b 0000000_101 /* SRLI  */,
-					10'b 0100000_101 /* SRAI  */: begin next_wr = 1; next_rd = shift_result; end
-					10'b 0110100_101: begin
-						casez (insn[24:20])
-							5'b 11000 /* REV8  */,
-							5'b 00111 /* BREV8 */: begin next_wr = 1; next_rd = shift_result; end
-							default: illinsn = 1;
-						endcase
-					end
-					// Zbb: Basic bit-manipulation
-					10'b 0110000_001: begin
-						casez (insn[24:20])
-							5'b 00000 /* CLZ    */,
-							5'b 00001 /* CTZ    */: begin next_wr = 1; next_rd = 0; for (int i=32; i>0; i=i-1) next_rd = shift_input[i-1] ? 0 : next_rd + 1; end
-							5'b 00010 /* CPOP   */: begin next_wr = 1; next_rd = 0; for (int i=0; i<32; i=i+1) next_rd = next_rd + 32'(rs1_value[i]); end
-							5'b 00100 /* SEXT.B */: begin next_wr = 1; next_rd = 32'($signed(rs1_value[7:0])); end
-							5'b 00101 /* SEXT.H */: begin next_wr = 1; next_rd = 32'($signed(rs1_value[15:0])); end
-							default: illinsn = 1;
-						endcase
-					end
-					10'b 0110000_101 /* RORI  */: begin next_wr = 1; next_rd = rs1_value >> insn[24:20] | (rs1_value << (32 - insn[24:20])); end
-					10'b 0010100_101 /* ORC.B */: begin next_wr = insn[24:20] == 5'b 00111; illinsn = !next_wr; next_rd = 0; for (int i=0; i<4; i=i+1) next_rd[i*8 +: 8] = {8{|rs1_value[i*8 +: 8]}}; end
-					10'b 0000100_001 /* ZIP   */: begin next_wr = insn[24:20] == 5'b 01111; illinsn = !next_wr; next_rd = 0; for (int i=0; i<16; i=i+1) begin next_rd[2*i] = rs1_value[i]; next_rd[2*i+1] = rs1_value[i+16]; end end
-					10'b 0000100_101 /* UNZIP */: begin next_wr = insn[24:20] == 5'b 01111; illinsn = !next_wr; next_rd = 0; for (int i=0; i<16; i=i+1) begin next_rd[i] = rs1_value[2*i]; next_rd[i+16] = rs1_value[2*i+1]; end end
-					// Zbs: Single-bit instructions
-					10'b 0100100_101 /* BEXTI */: begin next_wr = 1; next_rd = 32'(shift_result[0]); end
-					default: illinsn = 1;
-				endcase
-			end
-			RiscVOpcode32::OP: begin
-			// ALU instructions: Add, Subtract, Shift Left Logical, Set Left Than, Set Less Than Unsigned, XOR, Shift Right Logical,
-			// Shift Right Arithmetic, OR, AND
-				case ({insn.funct7, insn.funct3})
-					10'b 0000000_000 /* ADD  */,
-					10'b 0100000_000 /* SUB  */: begin next_wr = 1; next_rd = add_result; end
-					10'b 0000000_010 /* SLT  */,
-					10'b 0000000_011 /* SLTU */: begin next_wr = 1; next_rd = 32'(complt_result); end
-					10'b 0100000_100 /* XNOR (Zbb) */,
-					10'b 0110100_001 /* BINV (Zbs) */,
-					10'b 0000000_100 /* XOR  */: begin next_wr = 1; next_rd = rs1_value ^ alu_rs2; end
-					10'b 0000000_001 /* SLL  */,
-					10'b 0000000_101 /* SRL  */,
-					10'b 0100000_101 /* SRA  */: begin next_wr = 1; next_rd = shift_result; end
-					10'b 0100000_110 /* ORN  (Zbb) */,
-					10'b 0010100_001 /* BSET (Zbs) */,
-					10'b 0000000_110 /* OR   */: begin next_wr = 1; next_rd = rs1_value | alu_rs2; end
-					10'b 0100000_111 /* ANDN (Zbb) */,
-					10'b 0100100_001 /* BCLR (Zbs) */,
-					10'b 0000000_111 /* AND  */: begin next_wr = 1; next_rd = rs1_value & alu_rs2; end
-					// Zba: Address generation
-					10'b 0010000_010 /* SH1ADD */: begin next_wr = 1; next_rd = rs2_value + {rs1_value[30:0], 1'b 0}; end
-					10'b 0010000_100 /* SH2ADD */: begin next_wr = 1; next_rd = rs2_value + {rs1_value[29:0], 2'b 0}; end
-					10'b 0010000_110 /* SH3ADD */: begin next_wr = 1; next_rd = rs2_value + {rs1_value[28:0], 3'b 0}; end
-					// Zbb: Basic bit-manipulation
-					10'b 0000101_110 /* MAX    */,
-					10'b 0000101_111 /* MAXU   */,
-					10'b 0000101_100 /* MIN    */,
-					10'b 0000101_101 /* MINU   */: begin next_wr = 1; next_rd = complt_result == uop.ctrl.complt_value ? rs1_value : rs2_value; end
-					10'b 0110000_001 /* ROL    */: begin next_wr = 1; next_rd = rs1_value << rs2_value[4:0] | (rs1_value >> (32 - rs2_value[4:0])); end // TODO: go mad with power and implement a funnel shifter
-					10'b 0110000_101 /* ROR    */: begin next_wr = 1; next_rd = rs1_value >> rs2_value[4:0] | (rs1_value << (32 - rs2_value[4:0])); end
-					10'b 0000100_100 /* PACK   */: begin next_wr = 1; next_rd = {rs2_value[15:0], rs1_value[15:0]}; end
-					10'b 0000100_111 /* PACKH  */: begin next_wr = 1; next_rd = {16'b0, rs2_value[7:0], rs1_value[7:0]}; end
-					// Zbc: Carry-less multiplication
-					10'b 0000101_001 /* CLMUL  */: begin next_wr = 1; next_rd = 0; for (int i=0; i<32; i=i+1) next_rd = (rs2_value[i]) ? next_rd ^ (rs1_value << i) : next_rd; end
-					10'b 0000101_011 /* CLMULH */: begin next_wr = 1; next_rd = 0; for (int i=1; i<32; i=i+1) next_rd = (((rs2_value >> i) & 32'b1) != 0) ? next_rd ^ (rs1_value >> (32 - i)) : next_rd; end
-					10'b 0000101_010 /* CLMULR */: begin next_wr = 1; next_rd = 0; for (int i=0; i<32; i=i+1) next_rd = (rs2_value[i]) ? next_rd ^ (rs1_value >> (32 - i - 1)) : next_rd; end
-					// Zbs: Single-bit instructions
-					10'b 0100100_101 /* BEXT   */: begin next_wr = 1; next_rd = 32'(shift_result[0]); end
-					// Zbkx: Crossbar permutations
-					10'b 0010100_010 /* XPERM4 */: begin next_wr = 1; next_rd = 0; for (int i=0; i<8; i=i+1) next_rd[i*4+:4] = 4'(rs1_value >> (rs2_value[i*4+:4])); end
-					10'b 0010100_100 /* XPERM8 */: begin next_wr = 1; next_rd = 0; for (int i=0; i<4; i=i+1) next_rd[i*8+:8] = 8'(rs1_value >> (rs2_value[i*8+:8])); end
-					default: illinsn = 1;
-				endcase
-			end
-`ifdef NERV_CSR
-			RiscVOpcode32::SYSTEM: begin
-				case (insn.funct3)
-					3'b 000 : begin
-						case ({insn.funct7, insn.rs2})
-							12'b 0000000_00000 /* ECALL */:
-								begin
-									csr_mepc_next = { pc[31:2], 2'b00 };
-									npc = csr_mtvec_value & ~3;
-									csr_mcause_next = MCAUSE_ECALL_M_MODE;
-									csr_mstatus_next[7] = csr_mstatus_value[3];  // save MIE to MPIE
-									csr_mstatus_next[3] = 0; // MIE to 0
-								end
-							12'b 0000000_00001 /* EBREAK */:
-								begin
-									csr_mepc_next = { pc[31:2], 2'b00 };
-									npc = csr_mtvec_value & ~3;
-									csr_mcause_next = MCAUSE_BREAKPOINT;
-									csr_mstatus_next[7] = csr_mstatus_value[3];  // save MIE to MPIE
-									csr_mstatus_next[3] = 0; // MIE to 0
-								end
-							12'b 0011000_00010 /* MRET */:
-								begin
-									npc = csr_mepc_value;
-									csr_mcause_next = 'b0;
-									csr_mstatus_next[3] = csr_mstatus_value[7];  // restore MIE from MPIE
-								end
-							12'b 0001000_00101 /* WFI */:
-								begin
-									// implemented as NOP
-								end
-							default: illinsn = 1;
-						endcase
-					end
-					default : begin
-						if (csr_ack) begin
-							next_wr = 1;
-							next_rd = csr_rdval;
-						end else
-							illinsn = 1;
-					end
-				endcase
-			end
-`endif
+			lc_uop::Add:             begin next_wr = 1; next_rd = add_result;   end
+			lc_uop::ShiftRight:      begin next_wr = 1; next_rd = shift_result; end
 			default: illinsn = 1;
 		endcase
+	end else begin
+			case (insn.opcode)
+				// load from memory into rd: Load Byte, Load Halfword, Load Word, Load Byte Unsigned, Load Halfword Unsigned
+				RiscVOpcode32::LOAD: begin
+					mem_rd_addr = add_result;
+					casez ({insn.funct3, mem_rd_addr[1:0]})
+						5'b 000_zz /* LB  */,
+						5'b 001_z0 /* LH  */,
+						5'b 010_00 /* LW  */,
+						5'b 100_zz /* LBU */,
+						5'b 101_z0 /* LHU */: begin
+							mem_rd_enable = 1;
+							mem_rd_reg = uop.rd;
+							mem_rd_func = {mem_rd_addr[1:0], insn.funct3};
+							mem_rd_addr = {mem_rd_addr[31:2], 2'b00};
+						end
+						default: illinsn = 1;
+					endcase
+				end
+				// store to memory instructions: Store Byte, Store Halfword, Store Word
+				RiscVOpcode32::STORE: begin
+					mem_wr_addr = add_result;
+					casez ({insn.funct3, mem_wr_addr[1:0]})
+						5'b 000_zz /* SB */,
+						5'b 001_z0 /* SH */,
+						5'b 010_00 /* SW */: begin
+							mem_wr_enable = 1;
+							mem_wr_data = rs2_value;
+							mem_wr_strb = 4'b 1111;
+							case (insn.funct3)
+								3'b 000 /* SB  */: begin mem_wr_strb = 4'b 0001; end
+								3'b 001 /* SH  */: begin mem_wr_strb = 4'b 0011; end
+								3'b 010 /* SW  */: begin mem_wr_strb = 4'b 1111; end
+								default: illinsn = 1;
+							endcase
+							mem_wr_data = mem_wr_data << (8*mem_wr_addr[1:0]);
+							mem_wr_strb = mem_wr_strb << mem_wr_addr[1:0];
+							mem_wr_addr = {mem_wr_addr[31:2], 2'b 00};
+						end
+						default: illinsn = 1;
+					endcase
+				end
+				// immediate ALU instructions: Add Immediate, Set Less Than Immediate, Set Less Than Immediate Unsigned, XOR Immediate,
+				// OR Immediate, And Immediate, Shift Left Logical Immediate, Shift Right Logical Immediate, Shift Right Arithmetic Immediate
+				RiscVOpcode32::OP_IMM: begin
+					casez ({insn.funct7, insn.funct3})
+						10'b zzzzzzz_010 /* SLTI  */,
+						10'b zzzzzzz_011 /* SLTIU */: begin next_wr = 1; next_rd = 32'(complt_result); end
+						10'b 0110100_001 /* BINVI (Zbs) */,
+						10'b zzzzzzz_100 /* XORI  */: begin next_wr = 1; next_rd = rs1_value ^ alu_rs2; end
+						10'b 0010100_001 /* BSETI (Zbs) */,
+						10'b zzzzzzz_110 /* ORI   */: begin next_wr = 1; next_rd = rs1_value | alu_rs2; end
+						10'b 0100100_001 /* BCLRI (Zbs) */,
+						10'b zzzzzzz_111 /* ANDI  */: begin next_wr = 1; next_rd = rs1_value & alu_rs2; end
+						// Zbb: Basic bit-manipulation
+						10'b 0110000_001: begin
+							casez (insn[24:20])
+								5'b 00000 /* CLZ    */,
+								5'b 00001 /* CTZ    */: begin next_wr = 1; next_rd = 0; for (int i=32; i>0; i=i-1) next_rd = shift_input[i-1] ? 0 : next_rd + 1; end
+								5'b 00010 /* CPOP   */: begin next_wr = 1; next_rd = 0; for (int i=0; i<32; i=i+1) next_rd = next_rd + 32'(rs1_value[i]); end
+								5'b 00100 /* SEXT.B */: begin next_wr = 1; next_rd = 32'($signed(rs1_value[7:0])); end
+								5'b 00101 /* SEXT.H */: begin next_wr = 1; next_rd = 32'($signed(rs1_value[15:0])); end
+								default: illinsn = 1;
+							endcase
+						end
+						10'b 0110000_101 /* RORI  */: begin next_wr = 1; next_rd = rs1_value >> insn[24:20] | (rs1_value << (32 - insn[24:20])); end
+						10'b 0010100_101 /* ORC.B */: begin next_wr = insn[24:20] == 5'b 00111; illinsn = !next_wr; next_rd = 0; for (int i=0; i<4; i=i+1) next_rd[i*8 +: 8] = {8{|rs1_value[i*8 +: 8]}}; end
+						10'b 0000100_001 /* ZIP   */: begin next_wr = insn[24:20] == 5'b 01111; illinsn = !next_wr; next_rd = 0; for (int i=0; i<16; i=i+1) begin next_rd[2*i] = rs1_value[i]; next_rd[2*i+1] = rs1_value[i+16]; end end
+						10'b 0000100_101 /* UNZIP */: begin next_wr = insn[24:20] == 5'b 01111; illinsn = !next_wr; next_rd = 0; for (int i=0; i<16; i=i+1) begin next_rd[i] = rs1_value[2*i]; next_rd[i+16] = rs1_value[2*i+1]; end end
+						// Zbs: Single-bit instructions
+						10'b 0100100_101 /* BEXTI */: begin next_wr = 1; next_rd = 32'(shift_result[0]); end
+						default: illinsn = 1;
+					endcase
+				end
+				RiscVOpcode32::OP: begin
+				// ALU instructions: Add, Subtract, Shift Left Logical, Set Left Than, Set Less Than Unsigned, XOR, Shift Right Logical,
+				// Shift Right Arithmetic, OR, AND
+					case ({insn.funct7, insn.funct3})
+						10'b 0000000_010 /* SLT  */,
+						10'b 0000000_011 /* SLTU */: begin next_wr = 1; next_rd = 32'(complt_result); end
+						10'b 0100000_100 /* XNOR (Zbb) */,
+						10'b 0110100_001 /* BINV (Zbs) */,
+						10'b 0000000_100 /* XOR  */: begin next_wr = 1; next_rd = rs1_value ^ alu_rs2; end
+						10'b 0100000_110 /* ORN  (Zbb) */,
+						10'b 0010100_001 /* BSET (Zbs) */,
+						10'b 0000000_110 /* OR   */: begin next_wr = 1; next_rd = rs1_value | alu_rs2; end
+						10'b 0100000_111 /* ANDN (Zbb) */,
+						10'b 0100100_001 /* BCLR (Zbs) */,
+						10'b 0000000_111 /* AND  */: begin next_wr = 1; next_rd = rs1_value & alu_rs2; end
+						// Zba: Address generation
+						10'b 0010000_010 /* SH1ADD */: begin next_wr = 1; next_rd = rs2_value + {rs1_value[30:0], 1'b 0}; end
+						10'b 0010000_100 /* SH2ADD */: begin next_wr = 1; next_rd = rs2_value + {rs1_value[29:0], 2'b 0}; end
+						10'b 0010000_110 /* SH3ADD */: begin next_wr = 1; next_rd = rs2_value + {rs1_value[28:0], 3'b 0}; end
+						// Zbb: Basic bit-manipulation
+						10'b 0000101_110 /* MAX    */,
+						10'b 0000101_111 /* MAXU   */,
+						10'b 0000101_100 /* MIN    */,
+						10'b 0000101_101 /* MINU   */: begin next_wr = 1; next_rd = complt_result == uop.ctrl.complt_value ? rs1_value : rs2_value; end
+						10'b 0110000_001 /* ROL    */: begin next_wr = 1; next_rd = rs1_value << rs2_value[4:0] | (rs1_value >> (32 - rs2_value[4:0])); end // TODO: go mad with power and implement a funnel shifter
+						10'b 0110000_101 /* ROR    */: begin next_wr = 1; next_rd = rs1_value >> rs2_value[4:0] | (rs1_value << (32 - rs2_value[4:0])); end
+						10'b 0000100_100 /* PACK   */: begin next_wr = 1; next_rd = {rs2_value[15:0], rs1_value[15:0]}; end
+						10'b 0000100_111 /* PACKH  */: begin next_wr = 1; next_rd = {16'b0, rs2_value[7:0], rs1_value[7:0]}; end
+						// Zbc: Carry-less multiplication
+						10'b 0000101_001 /* CLMUL  */: begin next_wr = 1; next_rd = 0; for (int i=0; i<32; i=i+1) next_rd = (rs2_value[i]) ? next_rd ^ (rs1_value << i) : next_rd; end
+						10'b 0000101_011 /* CLMULH */: begin next_wr = 1; next_rd = 0; for (int i=1; i<32; i=i+1) next_rd = (((rs2_value >> i) & 32'b1) != 0) ? next_rd ^ (rs1_value >> (32 - i)) : next_rd; end
+						10'b 0000101_010 /* CLMULR */: begin next_wr = 1; next_rd = 0; for (int i=0; i<32; i=i+1) next_rd = (rs2_value[i]) ? next_rd ^ (rs1_value >> (32 - i - 1)) : next_rd; end
+						// Zbs: Single-bit instructions
+						10'b 0100100_101 /* BEXT   */: begin next_wr = 1; next_rd = 32'(shift_result[0]); end
+						// Zbkx: Crossbar permutations
+						10'b 0010100_010 /* XPERM4 */: begin next_wr = 1; next_rd = 0; for (int i=0; i<8; i=i+1) next_rd[i*4+:4] = 4'(rs1_value >> (rs2_value[i*4+:4])); end
+						10'b 0010100_100 /* XPERM8 */: begin next_wr = 1; next_rd = 0; for (int i=0; i<4; i=i+1) next_rd[i*8+:8] = 8'(rs1_value >> (rs2_value[i*8+:8])); end
+						default: illinsn = 1;
+					endcase
+				end
+	`ifdef NERV_CSR
+				RiscVOpcode32::SYSTEM: begin
+					case (insn.funct3)
+						3'b 000 : begin
+							case ({insn.funct7, insn.rs2})
+								12'b 0000000_00000 /* ECALL */:
+									begin
+										csr_mepc_next = { pc[31:2], 2'b00 };
+										npc = csr_mtvec_value & ~3;
+										csr_mcause_next = MCAUSE_ECALL_M_MODE;
+										csr_mstatus_next[7] = csr_mstatus_value[3];  // save MIE to MPIE
+										csr_mstatus_next[3] = 0; // MIE to 0
+									end
+								12'b 0000000_00001 /* EBREAK */:
+									begin
+										csr_mepc_next = { pc[31:2], 2'b00 };
+										npc = csr_mtvec_value & ~3;
+										csr_mcause_next = MCAUSE_BREAKPOINT;
+										csr_mstatus_next[7] = csr_mstatus_value[3];  // save MIE to MPIE
+										csr_mstatus_next[3] = 0; // MIE to 0
+									end
+								12'b 0011000_00010 /* MRET */:
+									begin
+										npc = csr_mepc_value;
+										csr_mcause_next = 'b0;
+										csr_mstatus_next[3] = csr_mstatus_value[7];  // restore MIE from MPIE
+									end
+								12'b 0001000_00101 /* WFI */:
+									begin
+										// implemented as NOP
+									end
+								default: illinsn = 1;
+							endcase
+						end
+						default : begin
+							if (csr_ack) begin
+								next_wr = 1;
+								next_rd = csr_rdval;
+							end else
+								illinsn = 1;
+						end
+					endcase
+				end
+	`endif
+				default: illinsn = 1;
+			endcase
+		end
 
 		if (reset || reset_q) begin
 			// reset has the highest priority

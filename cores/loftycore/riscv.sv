@@ -78,6 +78,12 @@ package RiscVOpcode32Branch;
 	} Funct3;
 endpackage
 
+package RiscVOpcode32Jalr;
+	typedef enum logic [2:0] {
+		JALR = 3'b000 // I
+	} Funct3;
+endpackage
+
 package RiscVOpcode32Op;
 	typedef enum logic [2:0] {
 		ADD  = 3'b000, // I
@@ -345,6 +351,11 @@ package RiscV;
 		return opcode_is_branch(insn) && insn.funct3 == RiscVOpcode32Branch::BGEU;
 	endfunction
 
+	// instruction checking functions: JALR opcode
+	function bit is_jalr(Insn32 insn);
+		return opcode_is_jalr(insn) && insn.funct3 == RiscVOpcode32Jalr::JALR;
+	endfunction
+
 	// instruction checking functions: OP-IMM opcode
 	function bit is_addi(Insn32 insn);
 		return opcode_is_op_imm(insn) && insn.funct3 == RiscVOpcode32OpImm::ADDI;
@@ -419,6 +430,10 @@ package RiscV;
 	endfunction
 
 	// instruction checking functions: OP opcode
+	function bit is_add(Insn32 insn);
+		return opcode_is_op(insn) && insn.funct7 == 7'b0000000 && insn.funct3 == RiscVOpcode32Op::ADD;
+	endfunction
+
 	function bit is_sll(Insn32 insn);
 		return opcode_is_op(insn) && insn.funct7 == 7'b0000000 && insn.funct3 == RiscVOpcode32Op::SLL;
 	endfunction
